@@ -1,14 +1,16 @@
 import json
-import math
-import time
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from rocketlog.input.shortcuts import install_shortcuts
 from rocketlog.record.manifest import Manifest
 from rocketlog.record.recorder import SessionRecorder
+from rocketlog.telemetry.simulator import TelemetrySimulator
+from rocketlog.telemetry.types import Telemetry
+from rocketlog.ui.hud import HudVideoWidget
 from rocketlog.video.gst_pipeline import GstVideo
 
 
@@ -17,10 +19,8 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.setWindowTitle("RocketLog Recorder")
 
-        self.video_label = QtWidgets.QLabel("No Video")
-        self.video_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.video_label.setMinimumSize(640, 480)
-        self.video_label.setStyleSheet("QLabel { background: #111; color: #ccc;")
+        self.video_view = HudVideoWidget(self)
+        self.video_view.setMinimumSize(640, 480)
 
         self.telemetry_box = QtWidgets.QGroupBox("Telemetry Data")
         self.t_alt = QtWidgets.QLabel("Altitude: - m")
@@ -46,17 +46,52 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_row.addWidget(self.btn_stop)
 
         left = QtWidgets.QVBoxLayout()
-        left.addWidget(self.video_label, stretch=1)
+        # left.addWidget(self.video_label, stretch=1)
+        left.addWidget(self.video_view, stretch=1)
         left.addLayout(btn_row)
 
         right = QtWidgets.QVBoxLayout()
         right.addWidget(self.telemetry_box)
         right.addStretch(1)
 
+        self.ann_bar = QtWidgets.QFrame()
+        self.ann_bar.setObjectName("AnnBar")
+        ann_layout = QtWidgets.QHBoxLayout(self.ann_bar)
+        ann_layout.setContentsMargins(12, 8, 12, 8)
+        ann_layout.setSpacing(10)
+
+        def chip(text: str, object_name: str) -> QtWidgets.QLabel:
+            lbl = QtWidgets.QLabel(text)
+            lbl.setObjectName(object_name)
+            lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            lbl.setMinimumWidth(100)
+            return lbl
+
+        self.chip_mode = chip("IDLE", "ChipNeutral")
+        self.chip_link = chip("LINK OK", "ChipGood")
+        self.chip_gps = chip("GPS SIM", "ChipNeutral")
+        self.chip_storage = chip("STORAGE OK", "ChipGood")
+        self.chip_rec = chip("REC OFF", "ChipNeutral")
+
+        ann_layout.addWidget(self.chip_mode)
+        ann_layout.addStretch(1)
+        ann_layout.addWidget(self.chip_link)
+        ann_layout.addWidget(self.chip_gps)
+        ann_layout.addWidget(self.chip_storage)
+        ann_layout.addWidget(self.chip_rec)
+
         root = QtWidgets.QWidget()
-        layout = QtWidgets.QHBoxLayout(root)
-        layout.addLayout(left, stretch=3)
-        layout.addLayout(right, stretch=1)
+        outer = QtWidgets.QVBoxLayout(root)
+        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setSpacing(10)
+
+        main_row = QtWidgets.QHBoxLayout()
+        main_row.addLayout(left, stretch=3)
+        main_row.addLayout(right, stretch=1)
+
+        outer.addWidget(self.ann_bar)
+        outer.addLayout(main_row)
+
         self.setCentralWidget(root)
 
         # Recording folder
@@ -70,8 +105,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._gst.error.connect(self.on_error)
         self._gst.info.connect(self.on_info)
 
+        # Telemetry Source (simulator for now)
+        self._telemetry = TelemetrySimulator()
+
         # Telemetry timer (10 Hz)
-        self._t0 = time.time()
         self._telemetry_timer = QtCore.QTimer(self)
         self._telemetry_timer.setInterval(100)
         self._telemetry_timer.timeout.connect(self.on_telemetry_tick)
@@ -82,6 +119,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_stop.clicked.connect(self.stop_recording)
 
         # Start preview
+        install_shortcuts(self)
         self._gst.start_preview()
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
@@ -99,14 +137,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot(QtGui.QImage)
     def on_frame(self, img: QtGui.QImage) -> None:
-        pix = QtGui.QPixmap.fromImage(img)
-        self.video_label.setPixmap(
-            pix.scaled(
-                self.video_label.size(),
-                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-                QtCore.Qt.TransformationMode.SmoothTransformation,
-            )
-        )
+        self.video_view.set_frame(img)
 
     @QtCore.Slot()
     def on_error(self, msg: str) -> None:
@@ -184,25 +215,39 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def on_telemetry_tick(self) -> None:
-        t = time.time() - self._t0
+        t: Telemetry = self._telemetry.sample()
 
-        alt = max(0.0, 5.0 * t - 0.02 * t * t) * 10.0
-        vel = (5.0 - 0.04 * t) * 10.0
-        batt = 12.6 - 0.002 * t
-        temp = 22.0 + 2.0 * math.sin(t / 5.0)
+        self.t_alt.setText(f"Altitude: {t['alt_m']} m")
+        self.t_vel.setText(f"Velocity: {t['vel_mps']} m/s")
+        self.t_batt.setText(f"Battery: {t['batt_v']} V")
+        self.t_temp.setText(f"Temperature: {t['temp_c']} °C")
 
-        telemetry = {
-            "t_unix": time.time(),
-            "alt_m": round(alt, 2),
-            "vel_mps": round(vel, 2),
-            "batt_v": round(batt, 3),
-            "temp_c": round(temp, 2),
-        }
-
-        self.t_alt.setText(f"Altitude: {telemetry['alt_m']} m")
-        self.t_vel.setText(f"Velocity: {telemetry['vel_mps']} m/s")
-        self.t_batt.setText(f"Battery: {telemetry['batt_v']} V")
-        self.t_temp.setText(f"Temperature: {telemetry['temp_c']} °C")
+        self.video_view.set_telemetry(t)
 
         if self._recorder.is_recording:
-            self._recorder.write_telemetry(telemetry)
+            self._recorder.write_telemetry(t)
+
+    def toggle_recording(self) -> None:
+        if self._recorder.is_recording:
+            self.stop_recording()
+        else:
+            self.start_recording()
+
+    def toggle_fullscreen(self) -> None:
+        if self.isFullScreen():
+            self.showNormal()
+        else:
+            self.showFullScreen()
+
+    def _set_rec_ui(self, on: bool) -> None:
+        self.video_view.set_recording(on)
+        self.chip_rec.setText("REC ON" if on else "REC OFF")
+        self.chip_rec.setObjectName("ChipWarn" if on else "ChipNeutral")
+        self.chip_mode.setText("RECORD" if on else "IDLE")
+        self.chip_mode.setObjectName("ChipCaution" if on else "ChipNeutral")
+
+        # reapply QSS when objectName changes
+        for w in (self.chip_rec, self.chip_mode):
+            w.style().unpolish(w)
+            w.style().polish(w)
+            w.update()

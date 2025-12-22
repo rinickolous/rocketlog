@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from rocketlog.record.manifest import Manifest
+from rocketlog.telemetry.types import Telemetry
 
 
 class SessionRecorder:
@@ -48,7 +49,7 @@ class SessionRecorder:
         with open(self.manifest_path, "w", encoding="utf-8") as f:
             json.dump(asdict(self._manifest), f, indent=2)
 
-    def write_telemetry(self, telemetry: dict) -> None:
+    def write_telemetry(self, telemetry: Telemetry) -> None:
         if not self._is_recording or self._telemetry_fp is None:
             raise RuntimeError("Recording has not been started.")
 

@@ -11,7 +11,7 @@ gi.require_version("Gst", "1.0")
 from gi.repository import Gst  # type: ignore
 
 from rocketlog.ui.main_window import MainWindow
-# from rocketlog.ui.style import APP_QSS
+from rocketlog.ui.style import APP_QSS
 
 
 def main() -> int:
@@ -33,8 +33,8 @@ def main() -> int:
     app.setApplicationName("RocketLog")
 
     # Global styling (glass cockpit theme, etc.)
-    # if APP_QSS:
-    #     app.setStyleSheet(APP_QSS)
+    if APP_QSS:
+        app.setStyleSheet(APP_QSS)
 
     # Optional: ensure consistent Qt behavior in kiosk setups
     # e.g. if running under a Wayland kiosk compositor

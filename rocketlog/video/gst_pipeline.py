@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Optional
 
 import gi
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtGui
 
 gi.require_version("Gst", "1.0")
 gi.require_version("GstApp", "1.0")
