@@ -3,7 +3,6 @@ from typing import Protocol, cast
 
 
 class ShortcutHost(Protocol):
-    def addAction(self, action: QtGui.QAction) -> None: ...
     def start_recording(self) -> None: ...
     def stop_recording(self) -> None: ...
     def toggle_recording(self) -> None: ...
@@ -28,7 +27,7 @@ def install_shortcuts(window: ShortcutHost) -> None:
         a = QtGui.QAction(name, qw)
         a.setShortcut(QtGui.QKeySequence(shortcut))
         a.triggered.connect(fn)
-        window.addAction(a)
+        QtWidgets.QWidget.addAction(qw, a)
 
     add("Start Recording", "R", window.start_recording)
     add("Stop Recording", "S", window.stop_recording)
