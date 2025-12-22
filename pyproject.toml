@@ -1,0 +1,16 @@
+[project]
+name = "rocketlog"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+	"PySide6"
+]
+
+[project.scripts]
+rocketlog = "rocketlog.app:main"
+
+[tool.setuptools]
+packages = ["rocketlog"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["recordings/*"]
