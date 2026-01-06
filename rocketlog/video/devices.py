@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import gi
 
 gi.require_version("Gst", "1.0")
-from gi.repository import Gst, GstApp  # type: ignore # noqa: E402
+from gi.repository import Gst  # type: ignore # noqa: E402
 
 
 @dataclass(frozen=True)
