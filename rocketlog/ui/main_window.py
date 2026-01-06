@@ -12,6 +12,7 @@ from rocketlog.telemetry.simulator import TelemetrySimulator
 from rocketlog.telemetry.types import Telemetry
 from rocketlog.ui.hud import HudVideoWidget
 from rocketlog.video.gst_pipeline import GstVideo
+from rocketlog.video.devices import list_camera_devices, CameraDevice
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -19,8 +20,27 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.setWindowTitle("RocketLog Recorder")
 
+        # Video Preview Panel
         self.video_view = HudVideoWidget(self)
         self.video_view.setMinimumSize(640, 480)
+
+        self.camera_combo = QtWidgets.QComboBox()
+        self.camera_combo.setMinimumWidth(260)
+
+        self._cameras: list[CameraDevice] = list_camera_devices()
+        if not self._cameras:
+            self.camera_combo.addItem("No cameras found")
+            self.camera_combo.setEnabled(False)
+        else:
+            for cam in self._cameras:
+                self.camera_combo.addItem(cam.label, cam.id)
+
+        self.camera_combo.currentIndexChanged.connect(self.on_camera_changed)
+
+        self.video_box = QtWidgets.QGroupBox("Video")
+        vg = QtWidgets.QVBoxLayout(self.video_box)
+        vg.addWidget(QtWidgets.QLabel("Camera"))
+        vg.addWidget(self.camera_combo)
 
         self.telemetry_box = QtWidgets.QGroupBox("Telemetry Data")
         self.t_alt = QtWidgets.QLabel("Altitude: - m")
@@ -51,6 +71,7 @@ class MainWindow(QtWidgets.QMainWindow):
         left.addLayout(btn_row)
 
         right = QtWidgets.QVBoxLayout()
+        right.addWidget(self.video_box)
         right.addWidget(self.telemetry_box)
         right.addStretch(1)
 
@@ -101,6 +122,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Recorder + video pipeline
         self._recorder = SessionRecorder(out_dir=self.recordings_dir)
         self._gst = GstVideo(camera_device=None, parent=self)
+        self._gst.set_source(str(self.camera_combo.currentData()))
         self._gst.frame_ready.connect(self.on_frame)
         self._gst.error.connect(self.on_error)
         self._gst.info.connect(self.on_info)
@@ -132,20 +154,39 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
         finally:
-            self._gst.stop()
+            self._gst.stop_recording()
         super().closeEvent(event)
+
+    # ---------------------------------------- #
+
+    @QtCore.Slot(int)
+    def on_camera_changed(self, idx: int) -> None:
+        if idx < 0:
+            return
+        device_id = self.camera_combo.itemData(idx)
+        if not device_id:
+            return
+        self._gst.set_source(str(device_id))
+
+    # ---------------------------------------- #
 
     @QtCore.Slot(QtGui.QImage)
     def on_frame(self, img: QtGui.QImage) -> None:
         self.video_view.set_frame(img)
 
+    # ---------------------------------------- #
+
     @QtCore.Slot()
     def on_error(self, msg: str) -> None:
         QtWidgets.QMessageBox.critical(self, "Error", msg)
 
+    # ---------------------------------------- #
+
     @QtCore.Slot()
     def on_info(self, msg: str) -> None:
         print(msg)
+
+    # ---------------------------------------- #
 
     def start_recording(self) -> None:
         if self._recorder.is_recording:
@@ -192,6 +233,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
 
+    # ---------------------------------------- #
+
     def stop_recording(self) -> None:
         if not self._recorder.is_recording:
             return
@@ -214,6 +257,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self, "Saved", f"Recording saved to:\n{archive_path}"
         )
 
+    # ---------------------------------------- #
+
     def on_telemetry_tick(self) -> None:
         t: Telemetry = self._telemetry.sample()
 
@@ -227,17 +272,23 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._recorder.is_recording:
             self._recorder.write_telemetry(t)
 
+    # ---------------------------------------- #
+
     def toggle_recording(self) -> None:
         if self._recorder.is_recording:
             self.stop_recording()
         else:
             self.start_recording()
 
+    # ---------------------------------------- #
+
     def toggle_fullscreen(self) -> None:
         if self.isFullScreen():
             self.showNormal()
         else:
             self.showFullScreen()
+
+    # ---------------------------------------- #
 
     def _set_rec_ui(self, on: bool) -> None:
         self.video_view.set_recording(on)

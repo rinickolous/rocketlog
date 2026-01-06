@@ -6,7 +6,9 @@ from PySide6 import QtCore, QtGui
 
 gi.require_version("Gst", "1.0")
 gi.require_version("GstApp", "1.0")
-from gi.repository import Gst, GstApp  # noqa: E402
+
+
+from gi.repository import Gst, GstApp  # type: ignore # noqa: E402
 
 
 class GstVideo(QtCore.QObject):
@@ -23,9 +25,11 @@ class GstVideo(QtCore.QObject):
     error = QtCore.Signal(str)
     info = QtCore.Signal(str)
 
+    # ---------------------------------------- #
+
     def __init__(self, camera_device: Optional[str] = None, parent=None):
         super().__init__(parent)
-        self.camera_device = camera_device
+        self._device_id = camera_device
 
         self.pipeline: Optional[Gst.Pipeline] = None
         self.appsink: Optional[GstApp.AppSink] = None
@@ -37,37 +41,69 @@ class GstVideo(QtCore.QObject):
         self._is_record_pipeline = False
         self._current_pipeline_str = ""
 
+    # ---------------------------------------- #
+
     @property
     def current_pipeline_str(self) -> str:
         return self._current_pipeline_str
 
-    def start_preview(self) -> None:
-        self.stop()
+    # ---------------------------------------- #
 
-        device_part = f"device={self.camera_device} " if self.camera_device else ""
-        # v4l2src: webcam
+    def set_source(self, device_id: str) -> None:
+        """
+        Switch preview source. For v4l2 this is usually '/dev/video0'.
+        Restarts the preview pipeline.
+        """
+        self._device_id = device_id
+        self.stop_preview()
+        self.start_preview()
+
+    # ---------------------------------------- #
+
+    def start_preview(self) -> None:
+        self.stop_recording()
+
+        device = getattr(self, "_device_id", "/dev/video0")
+        # v4l2src: selected device
         # videoconvert to RGB
         # appsink emit-signals so we can receive frames
+        # pipeline_str = (
+        #     f"v4l2src {device_part}do-timestamp=true ! "
+        #     f"videoconvert ! video/x-raw,format=RGB ! "
+        #     f"appsink name=appsink emit-signals=true sync=false max-buffers=1 drop=true"
+        # )
         pipeline_str = (
-            f"v4l2src {device_part}do-timestamp=true ! "
-            f"videoconvert ! video/x-raw,format=RGB ! "
-            f"appsink name=appsink emit-signals=true sync=false max-buffers=1 drop=true"
+            f"v4l2src device={device} do-timestamp=true ! "
+            "videoconvert ! videoscale ! "
+            "video/x-raw,format=RGB,width=1280,height=720,framerate=30/1 ! "
+            "appsink name=appsink emit-signals=true max-buffers=1 drop=true sync=false"
         )
 
         self._build_and_play(pipeline_str, is_record=False)
 
     # ---------------------------------------- #
 
-    def start_recording(self, mp4_path: Path) -> None:
-        self.stop()
+    def stop_preview(self) -> None:
+        if self.pipeline is not None:
+            try:
+                # Stop playback and release the device
+                self.pipeline.set_state(Gst.State.NULL)
+            finally:
+                self.pipeline = None
+                self.appsink = None
 
-        device_part = f"device={self.camera_device} " if self.camera_device else ""
-        # v4l2src: webcam
+    # ---------------------------------------- #
+
+    def start_recording(self, mp4_path: Path) -> None:
+        self.stop_recording()
+
+        device = getattr(self, "_device_id", "/dev/video0")
+        # v4l2src: selected device
         # tee to split stream
         # branch 1: RGB -> appsink for preview
         # branch 2: x264enc -> mp4mux -> filesink for recording
         pipeline_str = (
-            f"v4l2src {device_part}do-timestamp=true ! "
+            f"v4l2src device={device} do-timestamp=true ! "
             f"videoconvert ! tee name=t "
             f"t. ! queue ! video/x-raw,format=RGB ! "
             f"appsink name=appsink emit-signals=true sync=false max-buffers=1 drop=true "
@@ -78,7 +114,7 @@ class GstVideo(QtCore.QObject):
 
         self._build_and_play(pipeline_str, is_record=True)
 
-    def stop(self) -> None:
+    def stop_recording(self) -> None:
         self._bus_timer.stop()
         if self.pipeline is not None:
             try:
@@ -103,7 +139,7 @@ class GstVideo(QtCore.QObject):
             return
 
         if not self._is_record_pipeline:
-            self.stop()
+            self.stop_recording()
             return
 
         try:
@@ -123,7 +159,7 @@ class GstVideo(QtCore.QObject):
         except Exception as e:
             self.error.emit(f"Failed to stop recoridng gracefully: {e}")
         finally:
-            self.stop()
+            self.stop_recording()
 
     # ---------------------------------------- #
     #   Internal                               #
@@ -157,7 +193,7 @@ class GstVideo(QtCore.QObject):
             self.error.emit(
                 f"Failed to start GStreamer pipeline:\n{e}\n\nPipeline:\n{pipeline_str}"
             )
-            self.stop()
+            self.stop_recording()
 
     # ---------------------------------------- #
 
@@ -174,7 +210,7 @@ class GstVideo(QtCore.QObject):
             if msg.type == Gst.MessageType.ERROR:
                 err, dbg = msg.parse_error()
                 self.error.emit(f"GStreamer Error: {err.message}\n{dbg or ''}")
-                self.stop()
+                self.stop_recording()
                 break
             elif msg.type == Gst.MessageType.WARNING:
                 warn, dbg = msg.parse_warning()

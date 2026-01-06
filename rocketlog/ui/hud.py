@@ -15,17 +15,25 @@ class HudVideoWidget(QtWidgets.QWidget):
         self.setMinimumSize(800, 450)
         self.setAutoFillBackground(True)
 
+    # ---------------------------------------- #
+
     def set_frame(self, img: QtGui.QImage) -> None:
         self._image = img
         self.update()
+
+    # ---------------------------------------- #
 
     def set_telemetry(self, t: Telemetry) -> None:
         self._telemetry = t
         self.update()
 
+    # ---------------------------------------- #
+
     def set_recording(self, on: bool) -> None:
         self._recording = on
         self.update()
+
+    # ---------------------------------------- #
 
     def paintEvent(self, e: QtGui.QPaintEvent) -> None:
         p = QtGui.QPainter(self)
@@ -104,6 +112,8 @@ class HudVideoWidget(QtWidgets.QWidget):
                 )
 
         p.restore()
+
+    # ---------------------------------------- #
 
     def _hud_text(
         self,

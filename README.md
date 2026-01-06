@@ -1,54 +1,41 @@
-# RocketLog (v0, GStreamer + PySide6)
+# RocketLog Ground Station
 
-A minimal prototype “ground station” desktop app written in Python that:
+A modular Python ground-station application for small rocketry and telemetry experiments.
 
-- Shows a live **webcam** feed (GStreamer `v4l2src`)
-- Displays **simulated telemetry** in real time
-- Records **MP4 video + telemetry JSONL**
-- Packages both into a single archive file: **`.rocketlog`** (a ZIP container)
+RocketLog provides:
 
-This is a **hardware-free** scaffold intended for early UI and recording workflow development on Linux.
+- Live **video preview** via GStreamer
+- Live **telemetry display** (currently simulated)
+- Session **recording** (video + telemetry packaged together)
+- A **modern “glass cockpit” UI** (Qt / PySide6)
+- Designed to run both on a **desktop Linux machine** and a **headless / kiosk Raspberry Pi**
+- Clean architecture ready for **physical hardware** (LEDs, 7-segment displays, buttons)
 
----
-
-## Features (v0)
-
-- Live preview from `/dev/video*` using GStreamer
-- GUI using PySide6 (Qt)
-- Simulated telemetry at 10 Hz
-- One-click recording:
-  - `video.mp4` (H.264 via `x264enc`, MP4 mux)
-  - `telemetry.jsonl` (timestamped JSON per line)
-  - `manifest.json` (pipeline + metadata)
-- Single packaged file output: `recording_YYYYMMDDTHHMMSSZ.rocketlog`
+This repository is structured as a proper Python package and is intended to be installable directly from source.
 
 ---
 
-## Project Layout
+## Current status
 
-This v0 is typically a single-file script:
-
-- `main.py` — the application
-- `recordings/` — output directory created at runtime
-
-A `.rocketlog` archive contains:
-
-- `video.mp4`
-- `telemetry.jsonl`
-- `manifest.json`
+- UI: Qt Widgets (PySide6)
+- Video: GStreamer via `gi.repository`
+- Telemetry: simulated source (pluggable later)
+- Recording: session-based, `.rocketlog` archive
+- Keyboard shortcuts: implemented
+- Hardware IO (LEDs / 7-segment): **planned**, not yet wired in code
 
 ---
 
-## Requirements
+## Runtime requirements
 
-### OS / Runtime
+### Operating system
 
-- Linux (tested on Arch Linux)
-- Python 3.10+ (3.11/3.12 recommended)
+- Linux (tested on Arch Linux and Raspberry Pi OS)
+- Wayland or X11 (kiosk mode supported)
 
-### System Packages (Arch Linux)
+### System packages (GStreamer + GI)
 
-Install the GStreamer stack, codec plugins, GI bindings, and tools:
+#### Arch Linux
 
 ```bash
 sudo pacman -S --needed \
@@ -59,6 +46,65 @@ sudo pacman -S --needed \
   gst-plugins-ugly \
   gst-libav \
   python-gobject \
-  gobject-introspection \
-  gst-devtools
+  gobject-introspection
 ```
+
+#### Debian / Raspberry Pi OS
+
+```bash
+sudo apt update
+sudo apt install -y \
+  python3-venv python3-pip \
+  python3-gi python3-gst-1.0 gir1.2-gstreamer-1.0 \
+  gstreamer1.0-tools \
+  gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad \
+  gstreamer1.0-plugins-ugly \
+  gstreamer1.0-libav
+```
+
+---
+
+## First Time Setup
+
+```bash
+git clone https://github.com/rinickolous/rocketlog
+cd rocketlog
+
+# Because GI bindings are installed system-wide, the venv must see system packages:
+python3 -m venv .venv --system-site-packages
+
+# Activate venv:
+source .venv/bin/activate
+
+# Install Python dependencies:
+pip install --upgrade pip
+pip install -e .
+```
+
+## Launching RocketLog
+
+Works after `pip install -e .`
+
+```bash
+rocketlog
+```
+
+Thin launcher:
+
+```bash
+python main.py
+```
+
+---
+
+## Keyboard Shortcuts
+
+| Key      | Action               |
+| -------- | -------------------- |
+| `R`      | Start recording      |
+| `S`      | Stop recording       |
+| `Space`  | Toggle record / stop |
+| `F`      | Toggle fullscreen    |
+| `Ctrl+Q` | Quit application     |
