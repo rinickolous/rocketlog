@@ -1,5 +1,7 @@
 import json
+import time
 from dataclasses import asdict
+
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -8,9 +10,10 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from rocketlog.input.shortcuts import install_shortcuts
 from rocketlog.record.manifest import Manifest
 from rocketlog.record.recorder import SessionRecorder
-from rocketlog.telemetry.simulator import TelemetrySimulator
+from rocketlog.telemetry.reader import TelemetryReader
 from rocketlog.telemetry.types import Telemetry
 from rocketlog.ui.hud import HudVideoWidget
+from rocketlog.util.time import format_timestamp
 from rocketlog.video.gst_pipeline import GstVideo
 from rocketlog.video.devices import list_camera_devices, CameraDevice
 
@@ -43,6 +46,7 @@ class MainWindow(QtWidgets.QMainWindow):
         vg.addWidget(self.camera_combo)
 
         self.telemetry_box = QtWidgets.QGroupBox("Telemetry Data")
+        self.t_time = QtWidgets.QLabel("Clock: 00:00:00")
         self.t_alt = QtWidgets.QLabel("Altitude: - m")
         self.t_vel = QtWidgets.QLabel("Velocity: - m/s")
         self.t_batt = QtWidgets.QLabel("Battery: - V")
@@ -50,7 +54,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.t_status = QtWidgets.QLabel("Status: IDLE")
 
         t_layout = QtWidgets.QVBoxLayout()
-        for w in (self.t_alt, self.t_vel, self.t_batt, self.t_temp, self.t_status):
+        for w in (
+            self.t_time,
+            self.t_alt,
+            self.t_vel,
+            self.t_batt,
+            self.t_temp,
+            self.t_status,
+        ):
             w.setTextInteractionFlags(
                 QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
             )
@@ -127,8 +138,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._gst.error.connect(self.on_error)
         self._gst.info.connect(self.on_info)
 
-        # Telemetry Source (simulator for now)
-        self._telemetry = TelemetrySimulator()
+        # Telemetry Reader
+        self._telemetry = TelemetryReader()
 
         # Telemetry timer (10 Hz)
         self._telemetry_timer = QtCore.QTimer(self)
@@ -260,8 +271,17 @@ class MainWindow(QtWidgets.QMainWindow):
     # ---------------------------------------- #
 
     def on_telemetry_tick(self) -> None:
+        if not self._telemetry:
+            return
+
+        now = time.time()
+        if now - self._telemetry.last_ping_time >= 1.0:
+            self._telemetry.ping()
+            self._telemetry.last_ping_time = now
+
         t: Telemetry = self._telemetry.sample()
 
+        self.t_time.setText(f"Clock: {format_timestamp(t['t_unix'])}")
         self.t_alt.setText(f"Altitude: {t['alt_m']} m")
         self.t_vel.setText(f"Velocity: {t['vel_mps']} m/s")
         self.t_batt.setText(f"Battery: {t['batt_v']} V")
