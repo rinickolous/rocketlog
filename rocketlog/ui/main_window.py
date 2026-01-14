@@ -1,5 +1,4 @@
 import json
-import time
 from dataclasses import asdict
 
 from datetime import datetime, timezone
@@ -10,7 +9,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from rocketlog.input.shortcuts import install_shortcuts
 from rocketlog.record.manifest import Manifest
 from rocketlog.record.recorder import SessionRecorder
-from rocketlog.telemetry.reader import TelemetryReader
+from rocketlog.telemetry.worker import TelemetryWorker
 from rocketlog.telemetry.types import Telemetry
 from rocketlog.ui.hud import HudVideoWidget
 from rocketlog.util.time import format_timestamp
@@ -29,14 +28,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.camera_combo = QtWidgets.QComboBox()
         self.camera_combo.setMinimumWidth(260)
+        self.camera_combo.addItem("Detecting cameras…")
+        self.camera_combo.setEnabled(False)
 
-        self._cameras: list[CameraDevice] = list_camera_devices()
-        if not self._cameras:
-            self.camera_combo.addItem("No cameras found")
-            self.camera_combo.setEnabled(False)
-        else:
-            for cam in self._cameras:
-                self.camera_combo.addItem(cam.label, cam.id)
+        self._cameras: list[CameraDevice] = []
+        self._initialized = False
 
         self.camera_combo.currentIndexChanged.connect(self.on_camera_changed)
 
@@ -133,26 +129,67 @@ class MainWindow(QtWidgets.QMainWindow):
         # Recorder + video pipeline
         self._recorder = SessionRecorder(out_dir=self.recordings_dir)
         self._gst = GstVideo(camera_device=None, parent=self)
-        self._gst.set_source(str(self.camera_combo.currentData()))
         self._gst.frame_ready.connect(self.on_frame)
         self._gst.error.connect(self.on_error)
         self._gst.info.connect(self.on_info)
 
-        # Telemetry Reader
-        self._telemetry = TelemetryReader()
+        # Telemetry (async)
+        self._telemetry_thread = QtCore.QThread(self)
+        self._telemetry_worker = TelemetryWorker(parent=None)
+        self._telemetry_worker.moveToThread(self._telemetry_thread)
+        self._telemetry_thread.started.connect(self._telemetry_worker.start)
+        self._telemetry_worker.telemetry.connect(self.on_telemetry)
+        self._telemetry_worker.error.connect(self.on_info)
+        self._telemetry_worker.info.connect(self.on_info)
+        self._telemetry_thread.start()
 
-        # Telemetry timer (10 Hz)
+        self._telemetry: Telemetry | None = None
+
+        # Telemetry timer (10 Hz) - ticks worker thread
         self._telemetry_timer = QtCore.QTimer(self)
         self._telemetry_timer.setInterval(100)
-        self._telemetry_timer.timeout.connect(self.on_telemetry_tick)
+        self._telemetry_timer.timeout.connect(self._telemetry_worker.tick)
         self._telemetry_timer.start()
 
         # Buttons
         self.btn_start.clicked.connect(self.start_recording)
         self.btn_stop.clicked.connect(self.stop_recording)
 
-        # Start preview
         install_shortcuts(self)
+
+        # Defer camera enumeration + preview start until the event loop
+        QtCore.QTimer.singleShot(0, self._finish_startup)
+
+    @QtCore.Slot()
+    def _finish_startup(self) -> None:
+        if self._initialized:
+            return
+        self._initialized = True
+
+        # Camera enumeration might touch the system; do it after first paint.
+        try:
+            self._cameras = list_camera_devices()
+        except Exception as e:
+            self._cameras = []
+            self.on_info(f"Camera discovery failed: {e}")
+
+        self.camera_combo.blockSignals(True)
+        try:
+            self.camera_combo.clear()
+            if not self._cameras:
+                self.camera_combo.addItem("No cameras found")
+                self.camera_combo.setEnabled(False)
+            else:
+                for cam in self._cameras:
+                    self.camera_combo.addItem(cam.label, cam.id)
+                self.camera_combo.setEnabled(True)
+        finally:
+            self.camera_combo.blockSignals(False)
+
+        # Start preview with whatever camera is selected.
+        device = self.camera_combo.currentData()
+        if device:
+            self._gst.set_source(str(device))
         self._gst.start_preview()
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
@@ -166,6 +203,20 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
         finally:
             self._gst.stop_recording()
+
+        try:
+            self._telemetry_timer.stop()
+        except Exception:
+            pass
+
+        try:
+            if self._telemetry_thread.isRunning():
+                self._telemetry_worker.stop()
+                self._telemetry_thread.quit()
+                self._telemetry_thread.wait(1500)
+        except Exception:
+            pass
+
         super().closeEvent(event)
 
     # ---------------------------------------- #
@@ -271,15 +322,12 @@ class MainWindow(QtWidgets.QMainWindow):
     # ---------------------------------------- #
 
     def on_telemetry_tick(self) -> None:
-        if not self._telemetry:
-            return
+        # Kept for compatibility; telemetry now arrives via worker thread.
+        return
 
-        now = time.time()
-        if now - self._telemetry.last_ping_time >= 1.0:
-            self._telemetry.ping()
-            self._telemetry.last_ping_time = now
-
-        t: Telemetry = self._telemetry.sample()
+    @QtCore.Slot(object)
+    def on_telemetry(self, t: Telemetry) -> None:
+        self._telemetry = t
 
         self.t_time.setText(f"Clock: {format_timestamp(t['t_unix'])}")
         self.t_alt.setText(f"Altitude: {t['alt_m']} m")

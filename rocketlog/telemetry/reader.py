@@ -9,10 +9,9 @@ class TelemetryReader:
     Telemetry data reader.
     """
 
-    def __init__(self) -> None:
-        self.port = "/dev/ttyACM1"
-
-        self.baud = 115200
+    def __init__(self, port: str = "/dev/ttyACM1", baud: int = 115200) -> None:
+        self.port = port
+        self.baud = baud
         self.last_ping_time: float = 0.0
         self._ser = serial.Serial(self.port, self.baud, timeout=1)
 
