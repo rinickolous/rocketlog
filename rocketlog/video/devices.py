@@ -19,6 +19,9 @@ class CameraDevice:
     label: str
 
 
+# ---------------------------------------- #
+
+
 def list_camera_devices() -> list[CameraDevice]:
     """
     Return available video capture devices as seen by GStreamer.

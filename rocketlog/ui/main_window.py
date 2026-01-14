@@ -41,12 +41,23 @@ class MainWindow(QtWidgets.QMainWindow):
         vg.addWidget(QtWidgets.QLabel("Camera"))
         vg.addWidget(self.camera_combo)
 
-        self.telemetry_box = QtWidgets.QGroupBox("Telemetry Data")
-        self.t_time = QtWidgets.QLabel("Clock: 00:00:00")
-        self.t_alt = QtWidgets.QLabel("Altitude: - m")
-        self.t_vel = QtWidgets.QLabel("Velocity: - m/s")
-        self.t_batt = QtWidgets.QLabel("Battery: - V")
-        self.t_temp = QtWidgets.QLabel("Temperature: - °C")
+        self.telemetry_port_combo = QtWidgets.QComboBox()
+        self.telemetry_port_combo.setMinimumWidth(260)
+        self.telemetry_port_combo.addItem("Detecting telemetry devices…")
+        self.telemetry_port_combo.setEnabled(False)
+        self.telemetry_port_combo.currentIndexChanged.connect(
+            self.on_telemetry_port_changed
+        )
+
+        self.telemetry_box = QtWidgets.QGroupBox("Telemetry")
+        tg = QtWidgets.QVBoxLayout(self.telemetry_box)
+        tg.addWidget(QtWidgets.QLabel("Source"))
+        tg.addWidget(self.telemetry_port_combo)
+        self.t_time = QtWidgets.QLabel("Clock: --")
+        self.t_alt = QtWidgets.QLabel("Altitude: -- m")
+        self.t_vel = QtWidgets.QLabel("Velocity: -- m/s")
+        self.t_batt = QtWidgets.QLabel("Battery: -- V")
+        self.t_temp = QtWidgets.QLabel("Temperature: -- °C")
         self.t_status = QtWidgets.QLabel("Status: IDLE")
 
         t_layout = QtWidgets.QVBoxLayout()
@@ -62,7 +73,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
             )
             t_layout.addWidget(w)
-        self.telemetry_box.setLayout(t_layout)
+        tg.addLayout(t_layout)
 
         self.btn_start = QtWidgets.QPushButton("Start Recording")
         self.btn_stop = QtWidgets.QPushButton("Stop Recording")
@@ -96,7 +107,8 @@ class MainWindow(QtWidgets.QMainWindow):
             return lbl
 
         self.chip_mode = chip("IDLE", "ChipNeutral")
-        self.chip_link = chip("LINK OK", "ChipGood")
+        self.chip_link = chip("LINK DISCONNECTED", "ChipWarn")
+        self.chip_link.setMinimumWidth(160)
         self.chip_gps = chip("GPS SIM", "ChipNeutral")
         self.chip_storage = chip("STORAGE OK", "ChipGood")
         self.chip_rec = chip("REC OFF", "ChipNeutral")
@@ -136,11 +148,13 @@ class MainWindow(QtWidgets.QMainWindow):
         # Telemetry (async)
         self._telemetry_thread = QtCore.QThread(self)
         self._telemetry_worker = TelemetryWorker(parent=None)
+        self._telemetry_ports: list[tuple[str, str]] = []
         self._telemetry_worker.moveToThread(self._telemetry_thread)
         self._telemetry_thread.started.connect(self._telemetry_worker.start)
         self._telemetry_worker.telemetry.connect(self.on_telemetry)
-        self._telemetry_worker.error.connect(self.on_info)
-        self._telemetry_worker.info.connect(self.on_info)
+        self._telemetry_worker.state.connect(self.on_telemetry_state)
+        self._telemetry_worker.error.connect(self.on_telemetry_error)
+        self._telemetry_worker.info.connect(self.on_telemetry_info)
         self._telemetry_thread.start()
 
         self._telemetry: Telemetry | None = None
@@ -151,14 +165,67 @@ class MainWindow(QtWidgets.QMainWindow):
         self._telemetry_timer.timeout.connect(self._telemetry_worker.tick)
         self._telemetry_timer.start()
 
+        # Auto-refresh telemetry device list
+        self._telemetry_ports_timer = QtCore.QTimer(self)
+        self._telemetry_ports_timer.setInterval(2000)
+        self._telemetry_ports_timer.timeout.connect(self._refresh_telemetry_ports)
+        self._telemetry_ports_timer.start()
+
         # Buttons
         self.btn_start.clicked.connect(self.start_recording)
         self.btn_stop.clicked.connect(self.stop_recording)
 
         install_shortcuts(self)
 
-        # Defer camera enumeration + preview start until the event loop
+        # Defer camera/telemetry device enumeration + preview start until the event loop
         QtCore.QTimer.singleShot(0, self._finish_startup)
+
+    # ---------------------------------------- #
+
+    def _refresh_telemetry_ports(self) -> None:
+        selected = str(self.telemetry_port_combo.currentData() or "")
+
+        self._telemetry_ports = TelemetryWorker.list_esp32_ports()
+
+        self.telemetry_port_combo.blockSignals(True)
+        try:
+            self.telemetry_port_combo.clear()
+            if not self._telemetry_ports:
+                self.telemetry_port_combo.addItem("No ESP32 devices found")
+                self.telemetry_port_combo.setEnabled(False)
+            else:
+                selected_idx = 0
+                for i, (device, desc) in enumerate(self._telemetry_ports):
+                    self.telemetry_port_combo.addItem(f"{device} — {desc}", device)
+                    if device == selected:
+                        selected_idx = i
+                self.telemetry_port_combo.setEnabled(True)
+                self.telemetry_port_combo.setCurrentIndex(selected_idx)
+        finally:
+            self.telemetry_port_combo.blockSignals(False)
+
+    # ---------------------------------------- #
+
+    @QtCore.Slot(int)
+    def on_telemetry_port_changed(self, idx: int) -> None:
+        if idx < 0:
+            return
+        device = self.telemetry_port_combo.itemData(idx)
+        if not device:
+            return
+
+        # Restart worker on the new port.
+        try:
+            self._telemetry_worker.stop()
+        except Exception:
+            pass
+
+        # Update port, then reconnect.
+        self._telemetry_worker.set_port(str(device))
+        self.on_telemetry_state("reconnecting:0")
+        self._telemetry_worker.start()
+
+    # ---------------------------------------- #
 
     @QtCore.Slot()
     def _finish_startup(self) -> None:
@@ -166,7 +233,9 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self._initialized = True
 
-        # Camera enumeration might touch the system; do it after first paint.
+        # Telemetry ports + camera enumeration might touch the system; do it after first paint.
+        self._refresh_telemetry_ports()
+
         try:
             self._cameras = list_camera_devices()
         except Exception as e:
@@ -192,6 +261,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._gst.set_source(str(device))
         self._gst.start_preview()
 
+    # ---------------------------------------- #
+
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         try:
             if self._recorder.is_recording:
@@ -206,6 +277,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         try:
             self._telemetry_timer.stop()
+        except Exception:
+            pass
+
+        try:
+            self._telemetry_ports_timer.stop()
         except Exception:
             pass
 
@@ -247,6 +323,63 @@ class MainWindow(QtWidgets.QMainWindow):
     @QtCore.Slot()
     def on_info(self, msg: str) -> None:
         print(msg)
+
+    # ---------------------------------------- #
+
+    def _set_link_chip(self, text: str, object_name: str) -> None:
+        self.chip_link.setText(text)
+        self.chip_link.setObjectName(object_name)
+        self.chip_link.style().unpolish(self.chip_link)
+        self.chip_link.style().polish(self.chip_link)
+        self.chip_link.update()
+
+    # ---------------------------------------- #
+
+    @QtCore.Slot(str)
+    def on_telemetry_state(self, state: str) -> None:
+        if state == "connected":
+            self._set_link_chip("LINK OK", "ChipGood")
+            return
+
+        if state == "disconnected":
+            self._set_telemetry_disconnected_ui()
+            return
+
+        # Expected reconnecting formats:
+        # - "reconnecting" (legacy)
+        # - "reconnecting:N" (attempt counter)
+        if state.startswith("reconnecting"):
+            parts = state.split(":", 1)
+            if len(parts) == 2 and parts[1].isdigit():
+                self._set_link_chip(f"LINK RECONNECTING ({parts[1]})", "ChipCaution")
+            else:
+                self._set_link_chip("LINK RECONNECTING", "ChipCaution")
+            return
+
+        self._set_link_chip(f"LINK {state.upper()}", "ChipNeutral")
+
+    # ---------------------------------------- #
+
+    @QtCore.Slot(str)
+    def on_telemetry_info(self, msg: str) -> None:
+        self.on_telemetry_state("connected")
+        self.on_info(msg)
+
+    def _set_telemetry_disconnected_ui(self) -> None:
+        self._set_link_chip("LINK DISCONNECTED", "ChipWarn")
+
+        self.t_time.setText("Clock: --")
+        self.t_alt.setText("Altitude: -- m")
+        self.t_vel.setText("Velocity: -- m/s")
+        self.t_batt.setText("Battery: -- V")
+        self.t_temp.setText("Temperature: -- °C")
+
+    # ---------------------------------------- #
+
+    @QtCore.Slot(str)
+    def on_telemetry_error(self, msg: str) -> None:
+        self._set_telemetry_disconnected_ui()
+        self.on_info(msg)
 
     # ---------------------------------------- #
 
@@ -325,9 +458,15 @@ class MainWindow(QtWidgets.QMainWindow):
         # Kept for compatibility; telemetry now arrives via worker thread.
         return
 
+    # ---------------------------------------- #
+
     @QtCore.Slot(object)
     def on_telemetry(self, t: Telemetry) -> None:
         self._telemetry = t
+
+        # In case we got data without an explicit connect message
+        if self.chip_link.text() != "LINK OK":
+            self.on_telemetry_state("connected")
 
         self.t_time.setText(f"Clock: {format_timestamp(t['t_unix'])}")
         self.t_alt.setText(f"Altitude: {t['alt_m']} m")
@@ -335,7 +474,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.t_batt.setText(f"Battery: {t['batt_v']} V")
         self.t_temp.setText(f"Temperature: {t['temp_c']} °C")
 
-        self.video_view.set_telemetry(t)
+        # Telemetry is shown in the right-side panel; no video overlay.
 
         if self._recorder.is_recording:
             self._recorder.write_telemetry(t)
