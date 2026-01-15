@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from rocketlog.input.shortcuts import install_shortcuts
+from rocketlog.input.shortcuts import install_shortcuts, shortcut_hint
 from rocketlog.record.manifest import Manifest
 from rocketlog.record.recorder import SessionRecorder
 from rocketlog.telemetry.worker import TelemetryWorker
@@ -37,10 +37,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.camera_combo.currentIndexChanged.connect(self.on_camera_changed)
 
-        self.video_box = QtWidgets.QGroupBox("Video")
+        self.camera_label = QtWidgets.QLabel()
+
+        self.video_box = QtWidgets.QGroupBox("")
+        self.video_box.setObjectName("Panel")
         vg = QtWidgets.QVBoxLayout(self.video_box)
-        vg.addWidget(QtWidgets.QLabel("Camera"))
+        self.video_title = QtWidgets.QLabel("VIDEO")
+        self.video_title.setObjectName("PanelTitle")
+        vg.addWidget(self.video_title)
+        vg.addWidget(self.camera_label)
         vg.addWidget(self.camera_combo)
+
 
         self.telemetry_port_combo = QtWidgets.QComboBox()
         self.telemetry_port_combo.setMinimumWidth(260)
@@ -50,17 +57,26 @@ class MainWindow(QtWidgets.QMainWindow):
             self.on_telemetry_port_changed
         )
 
-        self.telemetry_box = QtWidgets.QGroupBox("Telemetry")
+        self.telemetry_box = QtWidgets.QGroupBox("")
+        self.telemetry_box.setObjectName("Panel")
         tg = QtWidgets.QVBoxLayout(self.telemetry_box)
+        self.telemetry_title = QtWidgets.QLabel("TELEMETRY")
+        self.telemetry_title.setObjectName("PanelTitle")
+        tg.addWidget(self.telemetry_title)
 
-        self.receiver_logs_box = QtWidgets.QGroupBox("Receiver Logs")
+        self.receiver_logs_box = QtWidgets.QGroupBox("")
+        self.receiver_logs_box.setObjectName("Panel")
         rlg = QtWidgets.QVBoxLayout(self.receiver_logs_box)
+        self.receiver_logs_title = QtWidgets.QLabel("RECEIVER LOGS")
+        self.receiver_logs_title.setObjectName("PanelTitle")
+        rlg.addWidget(self.receiver_logs_title)
         self.receiver_logs = QtWidgets.QPlainTextEdit()
         self.receiver_logs.setReadOnly(True)
         self.receiver_logs.setMaximumBlockCount(500)
         self.receiver_logs.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont))
         rlg.addWidget(self.receiver_logs)
-        tg.addWidget(QtWidgets.QLabel("Source"))
+        self.telemetry_source_label = QtWidgets.QLabel()
+        tg.addWidget(self.telemetry_source_label)
         tg.addWidget(self.telemetry_port_combo)
         self.t_time = QtWidgets.QLabel("Clock: --")
         self.t_alt = QtWidgets.QLabel("Altitude: -- m")
@@ -84,18 +100,35 @@ class MainWindow(QtWidgets.QMainWindow):
             t_layout.addWidget(w)
         tg.addLayout(t_layout)
 
-        self.btn_start = QtWidgets.QPushButton("Start Recording")
-        self.btn_stop = QtWidgets.QPushButton("Stop Recording")
+        self.btn_start = QtWidgets.QPushButton()
+        self.btn_stop = QtWidgets.QPushButton()
         self.btn_stop.setEnabled(False)
 
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addWidget(self.btn_start)
         btn_row.addWidget(self.btn_stop)
 
+        self.video_feed_box = QtWidgets.QGroupBox("")
+        self.video_feed_box.setObjectName("Panel")
+        vfb = QtWidgets.QVBoxLayout(self.video_feed_box)
+        self.video_feed_title = QtWidgets.QLabel("CAMERA FEED")
+        self.video_feed_title.setObjectName("PanelTitle")
+        self.video_feed_title.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        vfb.addWidget(self.video_feed_title)
+        vfb.setContentsMargins(4, 4, 4, 4)
+        vfb.setSpacing(4)
+        self.video_view.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
+        vfb.addWidget(self.video_view)
+
         left = QtWidgets.QVBoxLayout()
-        # left.addWidget(self.video_label, stretch=1)
-        left.addWidget(self.video_view, stretch=3)
-        left.addWidget(self.receiver_logs_box, stretch=2)
+        left.addWidget(self.video_feed_box)
+        left.addWidget(self.receiver_logs_box, stretch=1)
         left.addLayout(btn_row)
 
         right = QtWidgets.QVBoxLayout()
@@ -188,10 +221,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_start.clicked.connect(self.start_recording)
         self.btn_stop.clicked.connect(self.stop_recording)
 
+        self._apply_shortcut_labels()
         install_shortcuts(self)
 
         # Defer camera/telemetry device enumeration + preview start until the event loop
         QtCore.QTimer.singleShot(0, self._finish_startup)
+
+    # ---------------------------------------- #
+
+    def _apply_shortcut_labels(self) -> None:
+        cam_key = shortcut_hint("focus_camera")
+        src_key = shortcut_hint("focus_telemetry")
+        start_key = shortcut_hint("start_recording")
+        stop_key = shortcut_hint("stop_recording")
+
+        self.camera_label.setText(f"Camera ({cam_key})" if cam_key else "Camera")
+        self.telemetry_source_label.setText(f"Source ({src_key})" if src_key else "Source")
+        self.btn_start.setText(f"Start Recording ({start_key})" if start_key else "Start Recording")
+        self.btn_stop.setText(f"Stop Recording ({stop_key})" if stop_key else "Stop Recording")
 
     # ---------------------------------------- #
 
@@ -547,6 +594,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.start_recording()
 
     # ---------------------------------------- #
+
+    def focus_camera(self) -> None:
+        self.camera_combo.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
+
+    def focus_telemetry(self) -> None:
+        self.telemetry_port_combo.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
 
     def toggle_fullscreen(self) -> None:
         if self.isFullScreen():
