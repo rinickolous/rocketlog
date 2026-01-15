@@ -32,6 +32,7 @@ def _looks_like_esp32(description: str) -> bool:
 
 class TelemetryWorker(QtCore.QObject):
     telemetry = QtCore.Signal(object)
+    receiver_log = QtCore.Signal(object)
     state = QtCore.Signal(str)
     error = QtCore.Signal(str)
     info = QtCore.Signal(str)
@@ -80,6 +81,7 @@ class TelemetryWorker(QtCore.QObject):
         self._reconnect_interval_s = reconnect_interval_s
 
         self._reader: TelemetryReader | None = None
+        # legacy ping support (unused with framed protocol)
         self._last_ping_time: float = 0.0
         self._running = False
         self._next_connect_attempt_time: float = 0.0
@@ -169,11 +171,22 @@ class TelemetryWorker(QtCore.QObject):
             return
 
         try:
-            now = time.time()
-            if now - self._last_ping_time >= 1.0:
-                self._reader.ping()
-                self._last_ping_time = now
+            # Drain any receiver logs available now.
+            while True:
+                log = self._reader.receiver_log()
+                if log is None:
+                    break
+                self.receiver_log.emit(log)
+
+            # Telemetry is allowed to block for up to ~1s.
             t = self._reader.sample()
             self.telemetry.emit(t)
+
+            # Drain any logs that arrived with the telemetry frame.
+            while True:
+                log = self._reader.receiver_log()
+                if log is None:
+                    break
+                self.receiver_log.emit(log)
         except Exception as e:
             self._disconnect(f"Telemetry read error: {e}")

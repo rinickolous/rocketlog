@@ -10,6 +10,7 @@ from rocketlog.input.shortcuts import install_shortcuts
 from rocketlog.record.manifest import Manifest
 from rocketlog.record.recorder import SessionRecorder
 from rocketlog.telemetry.worker import TelemetryWorker
+from rocketlog.telemetry.protocol import ReceiverLog, format_log
 from rocketlog.telemetry.types import Telemetry
 from rocketlog.ui.hud import HudVideoWidget
 from rocketlog.util.time import format_timestamp
@@ -51,6 +52,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.telemetry_box = QtWidgets.QGroupBox("Telemetry")
         tg = QtWidgets.QVBoxLayout(self.telemetry_box)
+
+        self.receiver_logs_box = QtWidgets.QGroupBox("Receiver Logs")
+        rlg = QtWidgets.QVBoxLayout(self.receiver_logs_box)
+        self.receiver_logs = QtWidgets.QPlainTextEdit()
+        self.receiver_logs.setReadOnly(True)
+        self.receiver_logs.setMaximumBlockCount(500)
+        self.receiver_logs.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont))
+        rlg.addWidget(self.receiver_logs)
         tg.addWidget(QtWidgets.QLabel("Source"))
         tg.addWidget(self.telemetry_port_combo)
         self.t_time = QtWidgets.QLabel("Clock: --")
@@ -85,7 +94,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         left = QtWidgets.QVBoxLayout()
         # left.addWidget(self.video_label, stretch=1)
-        left.addWidget(self.video_view, stretch=1)
+        left.addWidget(self.video_view, stretch=3)
+        left.addWidget(self.receiver_logs_box, stretch=2)
         left.addLayout(btn_row)
 
         right = QtWidgets.QVBoxLayout()
@@ -157,6 +167,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._telemetry_worker.state.connect(self.on_telemetry_state)
         self._telemetry_worker.error.connect(self.on_telemetry_error)
         self._telemetry_worker.info.connect(self.on_telemetry_info)
+        self._telemetry_worker.receiver_log.connect(self.on_receiver_log)
         self._telemetry_thread.start()
 
         self._telemetry: Telemetry | None = None
@@ -384,6 +395,50 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_telemetry_error(self, msg: str) -> None:
         self._set_telemetry_disconnected_ui()
         self.on_info(msg)
+
+    # ---------------------------------------- #
+
+    @QtCore.Slot(object)
+    def on_receiver_log(self, log: ReceiverLog) -> None:
+        recv_ts = "--"
+        if log.t_unix_receiver is not None:
+            recv_ts = format_timestamp(log.t_unix_receiver)
+        host_ts = format_timestamp(log.t_unix_host)
+
+        # Use a single-character indicator rather than textual level names.
+        # (Keeps the UI compact; avoids duplicating "ERROR" etc. in display.)
+        level_symbol = {
+            0: "D",  # DEBUG
+            1: "I",  # INFO
+            2: "W",  # WARN
+            3: "E",  # ERROR
+        }.get(log.level, "?")
+
+        line = f"[{level_symbol}] {recv_ts} (host {host_ts}) {log.msg}"
+
+        # Color-code by log level.
+        cursor = self.receiver_logs.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
+
+        fmt = QtGui.QTextCharFormat()
+        if log.level == 0:  # DEBUG
+            fmt.setForeground(QtGui.QColor("#9CA3AF"))
+        elif log.level == 1:  # INFO
+            fmt.setForeground(QtGui.QColor("#E5E7EB"))
+        elif log.level == 2:  # WARN
+            fmt.setForeground(QtGui.QColor("#F59E0B"))
+        elif log.level == 3:  # ERROR
+            fmt.setForeground(QtGui.QColor("#EF4444"))
+
+        cursor.insertText(line + "\n", fmt)
+        self.receiver_logs.setTextCursor(cursor)
+        self.receiver_logs.ensureCursorVisible()
+
+        if self._recorder.is_recording:
+            try:
+                self._recorder.write_receiver_log(log)
+            except Exception:
+                pass
 
     # ---------------------------------------- #
 

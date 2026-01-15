@@ -3,8 +3,10 @@
 #include <stdio.h>
 
 #include <stdbool.h>
+#include <string.h>
 
 #include "rocketlog_time.h"
+#include "telemetry_packet.h"
 #include "telemetry_protocol.h"
 
 #include "freertos/FreeRTOS.h"
@@ -16,6 +18,8 @@
 #include "esp_timer.h"
 #include "led_strip.h"
 #include "led_strip_rmt.h"
+
+#include "driver/usb_serial_jtag.h"
 
 /* ---------------------------------------- */
 /*  Config Knobs                            */
@@ -68,6 +72,33 @@ static void i2c_init(void) {
 
 /* ---------------------------------------- */
 
+static void serial_send_frame(const uint8_t *data, size_t len) {
+	// COBS-frame the packet and terminate with 0x00.
+	uint8_t enc[512];
+	const size_t enc_len = rocketlog_cobs_encode(enc, sizeof(enc), data, len);
+	if (enc_len == 0) {
+		return;
+	}
+
+	usb_serial_jtag_write_bytes(enc, enc_len, portMAX_DELAY);
+	const uint8_t delim = 0;
+	usb_serial_jtag_write_bytes(&delim, 1, portMAX_DELAY);
+	usb_serial_jtag_wait_tx_done(portMAX_DELAY);
+}
+
+static void serial_send_log(rocketlog_log_level_t level, const char *msg) {
+	uint8_t pkt[512];
+	int64_t t_us = 0;
+	if (rocketlog_time_is_set()) {
+		t_us = (int64_t)llround(rocketlog_current_unix_time() * 1000000.0);
+	}
+	const int pkt_len = rocketlog_log_packet_encode_v1(pkt, sizeof(pkt), level, t_us, msg);
+	if (pkt_len <= 0) {
+		return;
+	}
+	serial_send_frame(pkt, (size_t)pkt_len);
+}
+
 static void i2c_task(void *arg) {
 	(void)arg;
 
@@ -85,16 +116,13 @@ static void i2c_task(void *arg) {
 			i2c_cmd_link_delete(cmd);
 
 			if (err == ESP_OK) {
-				printf("Found device at 0x%02X\n", addr);
 				found++;
 			}
 		}
 
 		if (!found) {
-			printf("No I2C devices found\n");
+			serial_send_log(ROCKETLOG_LOG_WARN, "No I2C devices found");
 		}
-
-		printf("Scan done\n\n");
 		vTaskDelay(pdMS_TO_TICKS(3000));
 	}
 }
@@ -145,11 +173,20 @@ static void status_led_update(void) {
 static void telemetry_task(void *arg) {
 	(void)arg;
 
-	// Disable ESP logging to keep the serial stream "pure CSV"
+	// Disable ESP logging to keep stdout as a binary-framed stream.
 	esp_log_level_set("*", ESP_LOG_NONE);
 
-	// Unbuffer stdout so lines appear immediately
+	// Install USB Serial/JTAG driver for host commands.
+	usb_serial_jtag_driver_config_t cfg = {
+		.rx_buffer_size = 1024,
+		.tx_buffer_size = 1024,
+	};
+	ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&cfg));
+
+	// stdout is not used for framing; keep it quiet anyway.
 	setvbuf(stdout, NULL, _IONBF, 0);
+
+	serial_send_log(ROCKETLOG_LOG_INFO, "Receiver started (binary framed)");
 
 	const double t0 = rocketlog_monotonic_seconds();
 
@@ -157,7 +194,7 @@ static void telemetry_task(void *arg) {
 		const double t_unix = rocketlog_current_unix_time();
 		if (!rocketlog_time_is_set()) {
 			// Skip output until time is set
-			/* printf("Error: Time is not set! Waiting...\n"); */
+
 			vTaskDelay(SAMPLE_PERIOD);
 			continue;
 		}
@@ -180,9 +217,10 @@ static void telemetry_task(void *arg) {
 			.battery = (float)batt,
 			.temperature = (float)temp,
 		};
-		char line[96];
-		if (telemetry_csv_encode(line, sizeof(line), &sample) > 0) {
-			fputs(line, stdout);
+		uint8_t pkt[ROCKETLOG_TELEMETRY_PACKET_V1_LEN];
+		const int pkt_len = rocketlog_telemetry_packet_encode_v1(pkt, sizeof(pkt), &sample);
+		if (pkt_len > 0) {
+			serial_send_frame(pkt, (size_t)pkt_len);
 		}
 
 		vTaskDelay(SAMPLE_PERIOD);
@@ -191,24 +229,93 @@ static void telemetry_task(void *arg) {
 
 /* ---------------------------------------- */
 
-static void time_sync_task(void *arg) {
-	(void)arg;
-	char buf[128];
+static int serial_read_frame(uint8_t *out, size_t out_len) {
+	// Non-blocking frame receive from USB Serial/JTAG.
+	// Returns decoded length, or -1 if no complete frame yet.
+	static uint8_t enc[512];
+	static size_t enc_len = 0;
 
 	while (1) {
-		status_led_update();
-		if (fgets(buf, sizeof(buf), stdin) == NULL) {
-			vTaskDelay(pdMS_TO_TICKS(50));
+		uint8_t ch = 0;
+		const int rx = usb_serial_jtag_read_bytes(&ch, 1, 0);
+		if (rx <= 0) {
+			return -1;
+		}
+		last_host_seen_us = esp_timer_get_time();
+		if (ch == 0) {
+			break;
+		}
+		if (enc_len < sizeof(enc)) {
+			enc[enc_len++] = ch;
+		} else {
+			enc_len = 0;
+			serial_send_log(ROCKETLOG_LOG_WARN, "RX frame too large; dropping");
+		}
+	}
 
+	if (enc_len == 0) {
+		return -1;
+	}
+	const size_t dec_len = rocketlog_cobs_decode(out, out_len, enc, enc_len);
+	enc_len = 0;
+	if (dec_len == 0) {
+		return -1;
+	}
+	return (int)dec_len;
+}
+
+static void time_sync_task(void *arg) {
+	(void)arg;
+
+	uint8_t pkt[512];
+	while (1) {
+		status_led_update();
+
+		// IMPORTANT: Do not block here. Use non-blocking USB Serial/JTAG reads.
+		const int pkt_len = serial_read_frame(pkt, sizeof(pkt));
+		if (pkt_len <= 0) {
+			vTaskDelay(pdMS_TO_TICKS(10));
 			continue;
 		}
 		last_host_seen_us = esp_timer_get_time();
 
-		double unix_time;
-		if (sscanf(buf, "SET_TIME,%lf", &unix_time) == 1) {
-			rocketlog_time_set_unix(unix_time);
+		uint8_t msg_type = 0;
+		const uint8_t *payload = NULL;
+		size_t payload_len = 0;
+		if (rocketlog_packet_decode_v1(&msg_type, &payload, &payload_len, pkt, (size_t)pkt_len) != 0) {
+			serial_send_log(ROCKETLOG_LOG_WARN, "Dropped invalid packet (decode/crc)");
+			continue;
+		}
+
+		if (msg_type == ROCKETLOG_MSG_TIME_SYNC) {
+			serial_send_log(ROCKETLOG_LOG_INFO, "TIME_SYNC received");
+			if (payload_len != 12) {
+				serial_send_log(ROCKETLOG_LOG_WARN, "TIME_SYNC bad payload length");
+				continue;
+			}
+			int64_t unix_time_us = 0;
+			uint32_t seq = 0;
+			memcpy(&unix_time_us, &payload[0], sizeof(unix_time_us));
+			memcpy(&seq, &payload[8], sizeof(seq));
+
+			rocketlog_time_set_unix((double)unix_time_us / 1000000.0);
 			last_host_seen_us = esp_timer_get_time();
-			printf("# TIME_SET %.6f\n", unix_time);
+
+			uint8_t ack_pkt[64];
+			const int ack_len =
+				rocketlog_ack_packet_encode_v1(ack_pkt, sizeof(ack_pkt), ROCKETLOG_MSG_TIME_SYNC, seq, 0, unix_time_us);
+			if (ack_len > 0) {
+				serial_send_frame(ack_pkt, (size_t)ack_len);
+			} else {
+				serial_send_log(ROCKETLOG_LOG_ERROR, "Failed to encode ACK");
+			}
+			serial_send_log(ROCKETLOG_LOG_INFO, "Time sync applied");
+
+			// Test: send one log of each level after successful time sync.
+			serial_send_log(ROCKETLOG_LOG_DEBUG, "Test log: DEBUG");
+			serial_send_log(ROCKETLOG_LOG_INFO, "Test log: INFO");
+			serial_send_log(ROCKETLOG_LOG_WARN, "Test log: WARN");
+			serial_send_log(ROCKETLOG_LOG_ERROR, "Test log: ERROR");
 		}
 	}
 }
@@ -217,10 +324,10 @@ static void time_sync_task(void *arg) {
 
 void app_main(void) {
 	status_led_init();
-	/* i2c_init(); */
+	i2c_init();
 	status_led_update(); // starts RED
 
 	xTaskCreate(time_sync_task, "time_sync_task", 4096, NULL, 6, NULL);
 	xTaskCreate(telemetry_task, "telemetry_task", 4096, NULL, 5, NULL);
-	/* xTaskCreate(i2c_task, "i2c_task", 4096, NULL, 5, NULL); */
+	xTaskCreate(i2c_task, "i2c_task", 4096, NULL, 5, NULL);
 }
