@@ -1,0 +1,12 @@
+CompileFlags:
+  Add:
+    # Clangd doesn't understand Xtensa/ESP-IDF flags; silence diagnostics.
+    - -Wno-unknown-warning-option
+    - -Wno-unused-command-line-argument
+    - -Qunused-arguments
+    # Some ESP-IDF headers include toolchain-specific headers.
+    - -I/opt/esp-idf/components/newlib/platform_include
+    - -I/opt/esp-idf/components/newlib/platform_include/sys
+    - -I/opt/esp-idf/components/newlib/esp32/include
+    - -I/opt/esp-idf/components/newlib/esp32s3/include
+    - -I/opt/esp-idf/components/newlib/port/include

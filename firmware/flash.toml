@@ -1,0 +1,11 @@
+# Flash configuration for ESP-IDF projects.
+#
+# Tip: set per-project ports if you have multiple dev boards attached.
+
+[receiver]
+port = "/dev/ttyACM1"
+baud = 115200
+
+[transmitter]
+port = "/dev/ttyACM2"
+baud = 115200

@@ -10,6 +10,7 @@ dependencies = [
 rocketlog = "rocketlog.app:main"
 
 [tool.setuptools]
+package-dir = {"" = "src"}
 packages = ["rocketlog"]
 
 [tool.setuptools.exclude-package-data]

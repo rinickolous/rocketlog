@@ -1,0 +1,25 @@
+---
+Language: C
+
+# Keep this intentionally minimal: tab indentation + a few agreed basics.
+BasedOnStyle: LLVM
+
+# Tabs
+UseTab: Always
+IndentWidth: 4
+TabWidth: 4
+
+# Basics you requested
+ColumnLimit: 120
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortFunctionsOnASingleLine: None
+
+# Keep diffs stable
+SortIncludes: false
+
+# Hygiene
+LineEnding: DeriveLF
+InsertNewlineAtEOF: true
+...

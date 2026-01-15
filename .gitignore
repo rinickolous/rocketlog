@@ -1,5 +1,3 @@
-
-
 # ---------------------------------------- #
 #   ESP-IDF (all firmware projects)        #
 # ---------------------------------------- #
@@ -8,14 +6,17 @@
 **/sdkconfig.old
 **/sdkconfig.defaults
 **/managed_components/
+
+# Vendored components should be tracked
+!firmware/components/**
 **/dependencies.lock
 **/compile_commands.json
+
+# ---------------------------------------- #
 
 # ESP-IDF tools
 .espressif/
 idf-env/
-
-
 
 # ---------------------------------------- #
 #   Python                                 #
@@ -27,10 +28,16 @@ __pycache__/
 .env
 .envrc
 
+# ---------------------------------------- #
+
 # Python packaging
 *.egg-info/
 dist/
 build/
+
+# Neovim / editor caches
+**/.cache/
+**/.pytest_cache/
 
 
 # ---------------------------------------- #
@@ -43,8 +50,6 @@ build/
 *.bak
 .Session.vim
 .session.vim
-
-
 
 # ---------------------------------------- #
 #   OS Junk                                #

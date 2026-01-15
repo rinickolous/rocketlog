@@ -1,0 +1,9 @@
+{
+  "include": ["src"],
+  "exclude": [
+    "**/.venv",
+    "firmware/**"
+  ],
+  "reportMissingImports": false,
+  "reportMissingModuleSource": false
+}
