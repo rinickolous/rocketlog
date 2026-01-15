@@ -34,20 +34,14 @@ QGroupBox {
 	background: #10151A;
 	border: 2px solid #27313A;
 	border-radius: 0px;
-	/* Original (working) title layout */
-	margin-top: 8px;
+	margin-top: 0px;
 	padding: 10px;
-	padding-top: 16px;
 }
 
 QGroupBox::title {
-	/* Built-in titles are not used; panels render header labels. */
+	/* Keep native box titles hidden; headers are QLabel#PanelTitle */
 	padding: 0px;
-}
-
-QGroupBox#Panel {
-	margin-top: 0px;
-	padding-top: 10px;
+	height: 0px;
 }
 
 QLabel#PanelTitle {
@@ -76,6 +70,7 @@ QPlainTextEdit, QLineEdit, QComboBox {
 QPlainTextEdit {
 	font-family: monospace;
 	padding: 2px;
+	margin: 0px;
 }
 
 QPlainTextEdit:focus, QLineEdit:focus, QComboBox:focus {
@@ -88,9 +83,6 @@ QComboBox::drop-down {
 	background: #10151A;
 }
 
-QComboBox::down-arrow {
-	/* Reliable arrow: let the platform draw it (QSS overrides can easily break). */
-}
 
 QPushButton {
 	background: #10151A;
