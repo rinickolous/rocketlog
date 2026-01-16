@@ -62,47 +62,6 @@ static i2c_master_dev_handle_t mpl_dev;
 /*  I2C Functions                           */
 /* ---------------------------------------- */
 
-static void i2c_probe_addr(i2c_master_bus_handle_t bus, uint8_t addr) {
-	// Using the new I2C driver in ESP-IDF 5.5 can enable an internal "asynchronous" transaction
-	// path that is not compatible with i2c_master_probe() and can be easily flooded.
-	// For debugging wiring, do a single conservative transaction against the address of interest.
-	// Read WHO_AM_I multiple times to check signal integrity.
-	const uint8_t who_reg = MPL3115A2_REG_WHO_AM_I;
-
-	i2c_master_dev_handle_t tmp = NULL;
-	i2c_device_config_t dev_cfg = {
-		.dev_addr_length = I2C_ADDR_BIT_LEN_7,
-		.device_address = addr,
-		.scl_speed_hz = I2C_FREQ,
-	};
-
-	esp_err_t err = i2c_master_bus_add_device(bus, &dev_cfg, &tmp);
-	if (err != ESP_OK) {
-		ESP_LOGE("rocketlog", "I2C add_device 0x%02X failed: %s (0x%x)", addr, esp_err_to_name(err), (unsigned)err);
-		return;
-	}
-
-	uint8_t values[16] = {0};
-	int ok = 0;
-	for (int i = 0; i < (int)sizeof(values); i++) {
-		err = i2c_master_transmit_receive(tmp, &who_reg, 1, &values[i], 1, 100);
-		if (err == ESP_OK) {
-			ok++;
-		}
-		vTaskDelay(pdMS_TO_TICKS(50));
-	}
-
-	ESP_LOGI("rocketlog", "I2C probe 0x%02X WHO_AM_I: ok=%d/%d", addr, ok, (int)sizeof(values));
-	ESP_LOGI("rocketlog",
-			 "I2C WHO_AM_I samples: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
-			 values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7], values[8],
-			 values[9], values[10], values[11], values[12], values[13], values[14], values[15]);
-
-	i2c_master_bus_rm_device(tmp);
-}
-
-/* ---------------------------------------- */
-
 static esp_err_t i2c_init(void) {
 	if (i2c_bus != NULL) {
 		return ESP_OK;
@@ -115,7 +74,7 @@ static esp_err_t i2c_init(void) {
 		.clk_source = I2C_CLK_SRC_DEFAULT,
 		.glitch_ignore_cnt = 7,
 		.intr_priority = 0,
-		.trans_queue_depth = 64,
+		.trans_queue_depth = 0,
 		.flags.enable_internal_pullup = 1,
 		.flags.allow_pd = 0,
 	};
@@ -133,7 +92,10 @@ static esp_err_t i2c_init(void) {
 		ESP_LOGE("rocketlog", "i2c_new_master_bus failed: %s", esp_err_to_name(err));
 		return err;
 	}
-	i2c_probe_addr(i2c_bus, MPL3115A2_ADDR);
+	if (i2c_master_probe(i2c_bus, MPL3115A2_ADDR, -1) != ESP_OK) {
+		ESP_LOGE("rocketlog", "MPL3115A2 not found on I2C bus");
+		return ESP_ERR_NOT_FOUND;
+	}
 
 	err = i2c_master_bus_add_device(i2c_bus, &dev_cfg, &mpl_dev);
 	return err;
@@ -220,14 +182,14 @@ static esp_err_t mpl3115a2_init(void) {
 		return err;
 	}
 
-	// CTRL_REG1: ALT=1 (altimeter), OS=128 (0b111), SBYB=1 (active)
-	// 0xB9 = 1011 1001
-	err = i2c_write_reg(MPL3115A2_REG_CTRL_REG1, 0xB9);
+	// CTRL_REG1: ALT=0 (barometer), OS=128 (0b111), SBYB=0 (standby)
+	// 0x19 = 0001 1001
+	err = i2c_write_reg(MPL3115A2_REG_CTRL_REG1, 0x19);
 	return err;
 }
 
-static esp_err_t mpl3115a2_read(float *altitude_m_out, float *temp_c_out) {
-	if (altitude_m_out == NULL || temp_c_out == NULL) {
+static esp_err_t mpl3115a2_read(float *pressure_pa_out, float *temp_c_out) {
+	if (pressure_pa_out == NULL || temp_c_out == NULL) {
 		ESP_LOGE("rocketlog", "Invalid initial values provided");
 		return ESP_ERR_INVALID_ARG;
 	}
@@ -238,16 +200,15 @@ static esp_err_t mpl3115a2_read(float *altitude_m_out, float *temp_c_out) {
 		ESP_LOGE("rocketlog", "i2c_read_regs failed err=%s (0x%x)", esp_err_to_name(err), (unsigned)err);
 		return err;
 	}
-	ESP_LOGI("rocketlog", "stauts after read: %d", status);
 
-	// STATUS: PDR (0x04) and TDR (0x02). In altimeter mode, pressure registers hold altitude.
+	// STATUS: PDR (bit2) and TDR (bit1). In barometer mode, pressure registers hold pressure.
 	// If not ready yet, kick a one-shot measurement and retry a few times.
 	for (int attempt = 0; attempt < 10 && ((status & 0x06) != 0x06); attempt++) {
 		// CTRL_REG1: set OST (one-shot trigger) while keeping current mode bits.
 		uint8_t ctrl = 0;
 		(void)i2c_read_regs(MPL3115A2_REG_CTRL_REG1, &ctrl, 1);
-		(void)i2c_write_reg(MPL3115A2_REG_CTRL_REG1, (uint8_t)(ctrl | 0x02));
-		vTaskDelay(pdMS_TO_TICKS(50));
+		(void)i2c_write_reg(MPL3115A2_REG_CTRL_REG1, (uint8_t)(ctrl | 0x40));
+		vTaskDelay(pdMS_TO_TICKS(100));
 		err = i2c_read_regs(MPL3115A2_REG_STATUS, &status, 1);
 		if (err != ESP_OK) {
 			return err;
@@ -262,17 +223,15 @@ static esp_err_t mpl3115a2_read(float *altitude_m_out, float *temp_c_out) {
 	uint8_t buf[5] = {0};
 	err = i2c_read_regs(MPL3115A2_REG_OUT_P_MSB, buf, sizeof(buf));
 	if (err != ESP_OK) {
-		ESP_LOGE("rocketlog", "Error line 263");
+		ESP_LOGE("rocketlog", "Error reading data registers");
 		return err;
 	}
+	ESP_LOGI("rocketlog", "MPL3115A2 raw: %02x %02x %02x %02x %02x", buf[0], buf[1], buf[2], buf[3], buf[4]);
 
-	// Altitude: 20-bit two's complement, Q16.4 (meters).
-	int32_t alt_raw = ((int32_t)buf[0] << 16) | ((int32_t)buf[1] << 8) | (int32_t)buf[2];
-	alt_raw >>= 4;
-	if (alt_raw & (1 << 19)) {
-		alt_raw -= (1 << 20);
-	}
-	*altitude_m_out = (float)alt_raw / 16.0f;
+	// Pressure: 20-bit unsigned (Pascals).
+	uint32_t press_raw = ((uint32_t)buf[0] << 16) | ((uint32_t)buf[1] << 8) | buf[2];
+	press_raw >>= 4;
+	*pressure_pa_out = (float)press_raw / 4.0f;
 
 	// Temperature: 12-bit two's complement, Q8.4 (degC).
 	int16_t temp_raw = (int16_t)(((uint16_t)buf[3] << 8) | (uint16_t)buf[4]);
@@ -288,17 +247,19 @@ static esp_err_t mpl3115a2_read(float *altitude_m_out, float *temp_c_out) {
 static void i2c_task(void *arg) {
 	(void)arg;
 
-	// Simple periodic health logging so we know I2C is wired.
+	// Periodic MPL3115A2 readings.
 	// Wait until I2C has been initialized by telemetry_task.
 	while (mpl_dev == NULL) {
 		vTaskDelay(pdMS_TO_TICKS(100));
 	}
 	while (1) {
-		float alt_m = 0.0f;
+		float press_pa = 0.0f;
 		float temp_c = 0.0f;
-		const esp_err_t err = mpl3115a2_read(&alt_m, &temp_c);
+		const esp_err_t err = mpl3115a2_read(&press_pa, &temp_c);
 
-		if (err != ESP_OK) {
+		if (err == ESP_OK) {
+			ESP_LOGI("rocketlog", "MPL3115A2: press=%.1f Pa, temp=%.1f C", press_pa, temp_c);
+		} else {
 			ESP_LOGE("rocketlog", "MPL3115A2 read failed: %s (0x%x)", esp_err_to_name(err), (unsigned)err);
 		}
 		vTaskDelay(pdMS_TO_TICKS(3000));
@@ -385,9 +346,9 @@ static void telemetry_task(void *arg) {
 		}
 		const double t = t_unix - t0;
 
-		float alt_m = 0.0f;
+		float press_pa = 0.0f;
 		float temp_c = 0.0f;
-		const bool mpl_ok = (mpl3115a2_read(&alt_m, &temp_c) == ESP_OK);
+		const bool mpl_ok = (mpl3115a2_read(&press_pa, &temp_c) == ESP_OK);
 
 		// Velocity and battery are placeholders until IMU/ADC are wired.
 		double vel = 0.0;
@@ -397,8 +358,8 @@ static void telemetry_task(void *arg) {
 			ESP_LOGW("rocketlog", "MPL3115A2 read failed");
 		}
 
-		// Altitude from MPL3115A2 is meters. Protocol uses "altitude" as meters.
-		double alt = mpl_ok ? (double)alt_m : 0.0;
+		// Pressure from MPL3115A2 is Pa. For now, use as altitude placeholder.
+		double alt = mpl_ok ? (double)press_pa / 1000.0 : 0.0; // kPa for now
 		double temp = mpl_ok ? (double)temp_c : 0.0;
 
 		telemetry_sample_t sample = {
