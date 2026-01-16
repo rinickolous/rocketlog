@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.c"
-    INCLUDE_DIRS "."
-    PRIV_REQUIRES telemetry_protocol
+		SRCS "telemetry_transmitter.c"
+		INCLUDE_DIRS "."
+		PRIV_REQUIRES log driver led_strip common telemetry_protocol
 )

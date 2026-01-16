@@ -75,6 +75,13 @@ receiver-flash: idf-check
             -b "{{ `python firmware/flash_config.py receiver baud --config firmware/flash.toml` }}" \
             flash'
 
+receiver-monitor: idf-check
+    bash -lc 'source /opt/esp-idf/export.sh >/dev/null 2>&1 && \
+        idf.py -C firmware/receiver \
+            -p "{{ `python firmware/flash_config.py receiver port --config firmware/flash.toml` }}" \
+            -b "{{ `python firmware/flash_config.py receiver baud --config firmware/flash.toml` }}" \
+            monitor'
+
 receiver-burn: receiver-build receiver-flash
 
 # ---------------------------------------- #
@@ -91,5 +98,12 @@ transmitter-flash: idf-check
             -p "{{ `python firmware/flash_config.py transmitter port --config firmware/flash.toml` }}" \
             -b "{{ `python firmware/flash_config.py transmitter baud --config firmware/flash.toml` }}" \
             flash'
+
+transmitter-monitor: idf-check
+    bash -lc 'source /opt/esp-idf/export.sh >/dev/null 2>&1 && \
+        idf.py -C firmware/transmitter \
+            -p "{{ `python firmware/flash_config.py transmitter port --config firmware/flash.toml` }}" \
+            -b "{{ `python firmware/flash_config.py transmitter baud --config firmware/flash.toml` }}" \
+            monitor'
 
 transmitter-burn: transmitter-build transmitter-flash

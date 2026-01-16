@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <string.h>
 
+#include "rocketlog_board.h"
 #include "rocketlog_time.h"
 #include "telemetry_packet.h"
 #include "telemetry_protocol.h"
@@ -12,7 +13,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "driver/i2c.h"
 #include "driver/rmt_tx.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -27,50 +27,32 @@
 
 /* Time keeping moved to components/common (rocketlog_time.*) */
 
-static volatile int64_t last_host_seen_us = 0;		// updated on any host command
-static const int64_t HOST_TIMEOUT_US = 5 * 1000000; // 5 seconds
+// Updated on any successfully validated LoRa telemetry frame.
+// NOTE: LoRa receive code will call note_lora_telemetry_received() once wired up.
+static volatile int64_t last_lora_seen_us = 0;
+static const int64_t LORA_TIMEOUT_US = 2500000; // 2.5 seconds (@ ~10 Hz telemetry)
+
+static bool lora_alive(void) {
+	int64_t now = esp_timer_get_time();
+	int64_t age = now - last_lora_seen_us;
+	return (last_lora_seen_us != 0) && (age <= LORA_TIMEOUT_US);
+}
+
+static void note_lora_telemetry_received(void) {
+	last_lora_seen_us = esp_timer_get_time();
+}
+
+// Placeholder for the upcoming LoRa RX integration.
+// When you successfully parse a valid telemetry frame from the radio, call this.
+void rocketlog_lora_note_valid_telemetry(void) {
+	note_lora_telemetry_received();
+}
 
 static const TickType_t SAMPLE_PERIOD = pdMS_TO_TICKS(100);
 
-#define RGB_LED_GPIO 48
+#define RGB_LED_GPIO ROCKETLOG_RGB_LED_GPIO
 
 static led_strip_handle_t led_strip;
-
-// I2C
-
-#define I2C_PORT I2C_NUM_0
-#define I2C_SCL 10
-#define I2C_SDA 11
-#define I2C_FREQ 100000
-
-/* ---------------------------------------- */
-/*  Host Connect                            */
-/* ---------------------------------------- */
-
-static bool host_alive(void) {
-	int64_t now = esp_timer_get_time();
-	int64_t age = now - last_host_seen_us;
-	return (last_host_seen_us != 0) && (age <= HOST_TIMEOUT_US);
-}
-
-/* ---------------------------------------- */
-/*  I2C Functions                           */
-/* ---------------------------------------- */
-
-static void i2c_init(void) {
-	i2c_config_t conf = {
-		.mode = I2C_MODE_MASTER,
-		.sda_io_num = I2C_SDA,
-		.scl_io_num = I2C_SCL,
-		.sda_pullup_en = GPIO_PULLUP_ENABLE,
-		.scl_pullup_en = GPIO_PULLUP_ENABLE,
-		.master.clk_speed = I2C_FREQ,
-	};
-	ESP_ERROR_CHECK(i2c_param_config(I2C_PORT, &conf));
-	ESP_ERROR_CHECK(i2c_driver_install(I2C_PORT, conf.mode, 0, 0, 0));
-}
-
-/* ---------------------------------------- */
 
 static void serial_send_frame(const uint8_t *data, size_t len) {
 	// COBS-frame the packet and terminate with 0x00.
@@ -99,34 +81,6 @@ static void serial_send_log(rocketlog_log_level_t level, const char *msg) {
 	serial_send_frame(pkt, (size_t)pkt_len);
 }
 
-static void i2c_task(void *arg) {
-	(void)arg;
-
-	while (1) {
-		int found = 0;
-
-		for (uint8_t addr = 1; addr < 0x7F; addr++) {
-			i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-			i2c_master_start(cmd);
-			i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
-			i2c_master_stop(cmd);
-
-			esp_err_t err = i2c_master_cmd_begin(I2C_PORT, cmd, pdMS_TO_TICKS(50));
-
-			i2c_cmd_link_delete(cmd);
-
-			if (err == ESP_OK) {
-				found++;
-			}
-		}
-
-		if (!found) {
-			serial_send_log(ROCKETLOG_LOG_WARN, "No I2C devices found");
-		}
-		vTaskDelay(pdMS_TO_TICKS(3000));
-	}
-}
-
 /* ---------------------------------------- */
 /*  LED Functions                           */
 /* ---------------------------------------- */
@@ -153,19 +107,28 @@ static void status_led_init(void) {
 /* ---------------------------------------- */
 
 static void status_led_update(void) {
-	if (rocketlog_time_is_set() && host_alive()) {
+	static bool last_alive = false;
+
+	const bool alive = lora_alive();
+	if (alive != last_alive) {
+		serial_send_log(ROCKETLOG_LOG_INFO, alive ? "LoRa link alive" : "LoRa link lost");
+		last_alive = alive;
+	}
+
+	if (alive) {
 		// Solid green
 		led_strip_set_pixel(led_strip, 0, 0, 64, 0);
 		led_strip_refresh(led_strip);
-	} else {
-		// Slow pulse red
-		double t = rocketlog_monotonic_seconds();
-
-		uint8_t brightness = (uint8_t)((sin(t * 2.0) + 1.0) / 2.0 * 64.0);
-		led_strip_set_pixel(led_strip, 0, brightness, 0, 0);
-		/* led_strip_set_pixel(led_strip, 0, 64, 0, 0); // red */
-		led_strip_refresh(led_strip);
+		return;
 	}
+
+	// Slow pulse red
+	double t = rocketlog_monotonic_seconds();
+
+	uint8_t brightness = (uint8_t)((sin(t * 2.0) + 1.0) / 2.0 * 64.0);
+	led_strip_set_pixel(led_strip, 0, brightness, 0, 0);
+	/* led_strip_set_pixel(led_strip, 0, 64, 0, 0); // red */
+	led_strip_refresh(led_strip);
 }
 
 /* ---------------------------------------- */
@@ -187,6 +150,7 @@ static void telemetry_task(void *arg) {
 	setvbuf(stdout, NULL, _IONBF, 0);
 
 	serial_send_log(ROCKETLOG_LOG_INFO, "Receiver started (binary framed)");
+	serial_send_log(ROCKETLOG_LOG_INFO, "LoRa liveness: waiting for telemetry frames");
 
 	const double t0 = rocketlog_monotonic_seconds();
 
@@ -241,7 +205,6 @@ static int serial_read_frame(uint8_t *out, size_t out_len) {
 		if (rx <= 0) {
 			return -1;
 		}
-		last_host_seen_us = esp_timer_get_time();
 		if (ch == 0) {
 			break;
 		}
@@ -277,7 +240,6 @@ static void time_sync_task(void *arg) {
 			vTaskDelay(pdMS_TO_TICKS(10));
 			continue;
 		}
-		last_host_seen_us = esp_timer_get_time();
 
 		uint8_t msg_type = 0;
 		const uint8_t *payload = NULL;
@@ -299,7 +261,6 @@ static void time_sync_task(void *arg) {
 			memcpy(&seq, &payload[8], sizeof(seq));
 
 			rocketlog_time_set_unix((double)unix_time_us / 1000000.0);
-			last_host_seen_us = esp_timer_get_time();
 
 			uint8_t ack_pkt[64];
 			const int ack_len =
@@ -324,10 +285,8 @@ static void time_sync_task(void *arg) {
 
 void app_main(void) {
 	status_led_init();
-	i2c_init();
 	status_led_update(); // starts RED
 
 	xTaskCreate(time_sync_task, "time_sync_task", 4096, NULL, 6, NULL);
 	xTaskCreate(telemetry_task, "telemetry_task", 4096, NULL, 5, NULL);
-	xTaskCreate(i2c_task, "i2c_task", 4096, NULL, 5, NULL);
 }
