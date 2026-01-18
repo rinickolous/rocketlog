@@ -1,4 +1,4 @@
-# RocketLog Ground Station
+# RocketLog
 
 A modular Python ground-station application for small rocketry and telemetry experiments.
 
@@ -21,8 +21,6 @@ This repository is structured as a proper Python package and is intended to be i
 - Video: GStreamer via `gi.repository`
 - Telemetry: simulated source (pluggable later)
 - Recording: session-based, `.rocketlog` archive
-- Keyboard shortcuts: implemented
-- Hardware IO (LEDs / 7-segment): **planned**, not yet wired in code
 
 ---
 
@@ -30,7 +28,7 @@ This repository is structured as a proper Python package and is intended to be i
 
 ### Supported OS
 
-- Linux (tested on Arch Linux and Raspberry Pi OS)
+- Linux (tested on Arch Linux)
 - Wayland or X11
 
 ### Python
@@ -197,6 +195,7 @@ All commands run from the repo root.
 
 ```bash
 just app-build
+just app-run
 
 just receiver-build
 just receiver-flash
