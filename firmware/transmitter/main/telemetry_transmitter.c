@@ -46,8 +46,7 @@ static i2c_master_dev_handle_t mpl_dev;
 #define I2C_SDA 12
 #define I2C_FREQ 40000
 
-// MPL3115A2 barometric pressure sensor (altimeter mode)
-// Datasheet: registers 0x00.. etc. We keep this minimal: init + read altitude (m) and temp (C).
+// MPL3115A2 barometric pressure sensor (barometer mode)
 #define MPL3115A2_ADDR 0x60
 #define MPL3115A2_REG_STATUS 0x00
 #define MPL3115A2_REG_OUT_P_MSB 0x01
@@ -57,6 +56,9 @@ static i2c_master_dev_handle_t mpl_dev;
 #define MPL3115A2_REG_PT_DATA_CFG 0x13
 
 #define MPL3115A2_WHO_AM_I_VAL 0xC4
+
+// GY-GPS6MV2 GPS module
+#define GPS6MV2_ADDR 0x42
 
 /* ---------------------------------------- */
 /*  I2C Functions                           */
@@ -148,6 +150,8 @@ static esp_err_t i2c_write_reg(uint8_t reg, uint8_t value) {
 	return i2c_master_transmit(mpl_dev, buf, sizeof(buf), 50);
 }
 
+// NOTE: sometimes the data seems to be malformed or we get a partial reading, resulting in the data showing nonsese
+// values.
 static esp_err_t i2c_read_regs(uint8_t start_reg, uint8_t *out, size_t out_len) {
 	if (mpl_dev == NULL) {
 		ESP_LOGE("rocketlog", "i2c_read_regs: mpl_dev is NULL");
@@ -216,14 +220,13 @@ static esp_err_t mpl3115a2_read(float *pressure_pa_out, float *temp_c_out) {
 	}
 
 	if ((status & 0x06) != 0x06) {
-		ESP_LOGE("rocketlog", "Timeout line 256");
 		return ESP_ERR_TIMEOUT;
 	}
 
 	uint8_t buf[5] = {0};
 	err = i2c_read_regs(MPL3115A2_REG_OUT_P_MSB, buf, sizeof(buf));
 	if (err != ESP_OK) {
-		ESP_LOGE("rocketlog", "Error reading data registers");
+		ESP_LOGE("rocketlog", "Error reading data registers: %s (0x%x)", esp_err_to_name(err), (unsigned)err);
 		return err;
 	}
 	ESP_LOGI("rocketlog", "MPL3115A2 raw: %02x %02x %02x %02x %02x", buf[0], buf[1], buf[2], buf[3], buf[4]);
@@ -262,7 +265,7 @@ static void i2c_task(void *arg) {
 		} else {
 			ESP_LOGE("rocketlog", "MPL3115A2 read failed: %s (0x%x)", esp_err_to_name(err), (unsigned)err);
 		}
-		vTaskDelay(pdMS_TO_TICKS(3000));
+		vTaskDelay(pdMS_TO_TICKS(1000));
 	}
 }
 
