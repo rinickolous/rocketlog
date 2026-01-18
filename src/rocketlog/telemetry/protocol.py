@@ -30,9 +30,15 @@ class ReceiverLog:
     msg: str
 
 
+# ---------------------------------------- #
+
+
 def _crc32_le(data: bytes) -> int:
     # zlib.crc32 matches standard CRC-32; we treat stored bytes as little-endian.
     return zlib.crc32(data) & 0xFFFFFFFF
+
+
+# ---------------------------------------- #
 
 
 def cobs_encode(data: bytes) -> bytes:
@@ -64,6 +70,9 @@ def cobs_encode(data: bytes) -> bytes:
     return bytes(out)
 
 
+# ---------------------------------------- #
+
+
 def cobs_decode(data: bytes) -> bytes:
     if not data:
         raise ValueError("COBS cannot decode empty payload")
@@ -88,14 +97,22 @@ def cobs_decode(data: bytes) -> bytes:
     return bytes(out)
 
 
+# ---------------------------------------- #
+
+
 def encode_packet(msg_type: int, payload: bytes) -> bytes:
     if len(payload) > 255:
         raise ValueError("payload too large")
 
-    header = struct.pack("<2sBBB", ROCKETLOG_MAGIC, ROCKETLOG_VERSION, msg_type, len(payload))
+    header = struct.pack(
+        "<2sBBB", ROCKETLOG_MAGIC, ROCKETLOG_VERSION, msg_type, len(payload)
+    )
     without_crc = header + payload
     crc = _crc32_le(without_crc)
     return without_crc + struct.pack("<I", crc)
+
+
+# ---------------------------------------- #
 
 
 def decode_packet(packet: bytes) -> tuple[int, bytes]:
@@ -121,7 +138,12 @@ def decode_packet(packet: bytes) -> tuple[int, bytes]:
     return msg_type, packet[5:-4]
 
 
-def decode_telemetry_payload(payload: bytes) -> tuple[float, float, float, float, float]:
+# ---------------------------------------- #
+
+
+def decode_telemetry_payload(
+    payload: bytes,
+) -> tuple[float, float, float, float, float]:
     # Matches firmware telemetry_packet.c payload layout.
     if len(payload) != (8 + 4 + 4 + 2 + 2):
         raise ValueError("unexpected telemetry payload length")
@@ -138,6 +160,9 @@ def decode_telemetry_payload(payload: bytes) -> tuple[float, float, float, float
     )
 
 
+# ---------------------------------------- #
+
+
 def decode_log_payload(payload: bytes) -> tuple[int, float | None, str]:
     if len(payload) < 1 + 8:
         raise ValueError("unexpected log payload length")
@@ -150,10 +175,16 @@ def decode_log_payload(payload: bytes) -> tuple[int, float | None, str]:
     return level, t_unix_receiver, msg
 
 
+# ---------------------------------------- #
+
+
 def encode_time_sync(unix_time_s: float, seq: int) -> bytes:
     unix_time_us = int(round(unix_time_s * 1_000_000.0))
     payload = struct.pack("<qI", unix_time_us, seq & 0xFFFFFFFF)
     return encode_packet(MSG_TIME_SYNC, payload)
+
+
+# ---------------------------------------- #
 
 
 def decode_ack_payload(payload: bytes) -> tuple[int, int, int, float | None]:
@@ -168,6 +199,9 @@ def decode_ack_payload(payload: bytes) -> tuple[int, int, int, float | None]:
     return ack_type, seq, status, applied
 
 
+# ---------------------------------------- #
+
+
 def format_log(level: int, msg: str) -> str:
     levels = {
         LOG_DEBUG: "DEBUG",
@@ -176,6 +210,9 @@ def format_log(level: int, msg: str) -> str:
         LOG_ERROR: "ERROR",
     }
     return f"[{levels.get(level, str(level))}] {msg}"
+
+
+# ---------------------------------------- #
 
 
 def now_unix() -> float:

@@ -68,6 +68,8 @@ class SessionRecorder:
         json_line = json.dumps(telemetry, separators=(",", ":"))
         self._telemetry_fp.write(json_line + "\n")
 
+    # ---------------------------------------- #
+
     def write_receiver_log(self, log: ReceiverLog) -> None:
         if not self._is_recording or self._receiver_log_fp is None:
             raise RuntimeError("Recording has not been started.")

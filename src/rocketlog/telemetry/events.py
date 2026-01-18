@@ -11,9 +11,15 @@ class TelemetryEvent:
     telemetry: Telemetry
 
 
+# ---------------------------------------- #
+
+
 @dataclass(frozen=True)
 class ReceiverLogEvent:
     log: ReceiverLog
+
+
+# ---------------------------------------- #
 
 
 @dataclass(frozen=True)

@@ -4,7 +4,12 @@ from collections import deque
 import serial
 
 from rocketlog.telemetry import protocol
-from rocketlog.telemetry.events import AckEvent, ReceiverLogEvent, TelemetryEvent, TelemetryStreamEvent
+from rocketlog.telemetry.events import (
+    AckEvent,
+    ReceiverLogEvent,
+    TelemetryEvent,
+    TelemetryStreamEvent,
+)
 from rocketlog.telemetry.types import Telemetry
 
 
@@ -53,7 +58,11 @@ class TelemetryReader:
                 # Surface receiver logs during handshake to aid debugging.
                 print("RX_LOG:", protocol.format_log(evt.log.level, evt.log.msg))
 
-            if isinstance(evt, AckEvent) and evt.ack_type == protocol.MSG_TIME_SYNC and evt.seq == seq:
+            if (
+                isinstance(evt, AckEvent)
+                and evt.ack_type == protocol.MSG_TIME_SYNC
+                and evt.seq == seq
+            ):
                 if evt.status != protocol.ACK_STATUS_OK:
                     raise RuntimeError(f"Time sync rejected (status={evt.status})")
                 return
@@ -108,51 +117,65 @@ class TelemetryReader:
                 # Ignore malformed frames; COBS delimiter makes resync cheap.
                 continue
 
-            if msg_type == protocol.MSG_TELEMETRY:
-                try:
-                    t_unix, alt_m, vel_mps, batt_v, temp_c = protocol.decode_telemetry_payload(payload)
-                except Exception:
-                    continue
+            match msg_type:
+                case protocol.MSG_TELEMETRY:
+                    try:
+                        t_unix, alt_m, vel_mps, batt_v, temp_c = (
+                            protocol.decode_telemetry_payload(payload)
+                        )
+                    except Exception:
+                        continue
 
-                self._pending.append(
-                    TelemetryEvent(
-                        Telemetry(
-                            t_unix=t_unix,
-                            alt_m=alt_m,
-                            vel_mps=vel_mps,
-                            batt_v=batt_v,
-                            temp_c=temp_c,
+                    self._pending.append(
+                        TelemetryEvent(
+                            Telemetry(
+                                t_unix=t_unix,
+                                alt_m=alt_m,
+                                vel_mps=vel_mps,
+                                batt_v=batt_v,
+                                temp_c=temp_c,
+                            )
                         )
                     )
-                )
-                continue
-
-            if msg_type == protocol.MSG_LOG:
-                try:
-                    level, t_unix_receiver, msg = protocol.decode_log_payload(payload)
-                except Exception:
                     continue
 
-                self._pending.append(
-                    ReceiverLogEvent(
-                        protocol.ReceiverLog(
-                            t_unix_receiver=t_unix_receiver,
-                            t_unix_host=host_time,
-                            level=level,
-                            msg=msg,
+                case protocol.MSG_LOG:
+                    try:
+                        level, t_unix_receiver, msg = protocol.decode_log_payload(
+                            payload
+                        )
+                    except Exception:
+                        continue
+
+                    self._pending.append(
+                        ReceiverLogEvent(
+                            protocol.ReceiverLog(
+                                t_unix_receiver=t_unix_receiver,
+                                t_unix_host=host_time,
+                                level=level,
+                                msg=msg,
+                            )
                         )
                     )
-                )
-                continue
-
-            if msg_type == protocol.MSG_ACK:
-                try:
-                    ack_type, seq, status, applied = protocol.decode_ack_payload(payload)
-                except Exception:
                     continue
 
-                self._pending.append(AckEvent(ack_type=ack_type, seq=seq, status=status, applied_time_unix=applied))
-                continue
+                case protocol.MSG_ACK:
+                    try:
+                        ack_type, seq, status, applied = protocol.decode_ack_payload(
+                            payload
+                        )
+                    except Exception:
+                        continue
+
+                    self._pending.append(
+                        AckEvent(
+                            ack_type=ack_type,
+                            seq=seq,
+                            status=status,
+                            applied_time_unix=applied,
+                        )
+                    )
+                    continue
 
             # Unknown message types are ignored.
 
@@ -172,6 +195,8 @@ class TelemetryReader:
                 continue
             if isinstance(evt, TelemetryEvent):
                 return evt.telemetry
+
+    # ---------------------------------------- #
 
     def receiver_log(self) -> protocol.ReceiverLog | None:
         """Return the next receiver log message if available."""

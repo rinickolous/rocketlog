@@ -71,7 +71,7 @@ class TelemetryWorker(QtCore.QObject):
         baud: int | None = None,
         reconnect_interval_s: float = 2.0,
         parent=None,
-    ):
+    ) -> None:
         super().__init__(parent)
 
         flash_cfg = load_firmware_flash_config("receiver")

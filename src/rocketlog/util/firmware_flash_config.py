@@ -11,6 +11,9 @@ class FirmwareFlashConfig:
     baud: int | None = None
 
 
+# ---------------------------------------- #
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 

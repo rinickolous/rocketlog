@@ -48,7 +48,6 @@ class MainWindow(QtWidgets.QMainWindow):
         vg.addWidget(self.camera_label)
         vg.addWidget(self.camera_combo)
 
-
         self.telemetry_port_combo = QtWidgets.QComboBox()
         self.telemetry_port_combo.setMinimumWidth(260)
         self.telemetry_port_combo.addItem("Detecting telemetry devices…")
@@ -73,7 +72,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.receiver_logs = QtWidgets.QPlainTextEdit()
         self.receiver_logs.setReadOnly(True)
         self.receiver_logs.setMaximumBlockCount(500)
-        self.receiver_logs.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont))
+        self.receiver_logs.setFont(
+            QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
+        )
         rlg.addWidget(self.receiver_logs)
         self.telemetry_source_label = QtWidgets.QLabel()
         tg.addWidget(self.telemetry_source_label)
@@ -236,9 +237,15 @@ class MainWindow(QtWidgets.QMainWindow):
         stop_key = shortcut_hint("stop_recording")
 
         self.camera_label.setText(f"Camera ({cam_key})" if cam_key else "Camera")
-        self.telemetry_source_label.setText(f"Source ({src_key})" if src_key else "Source")
-        self.btn_start.setText(f"Start Recording ({start_key})" if start_key else "Start Recording")
-        self.btn_stop.setText(f"Stop Recording ({stop_key})" if stop_key else "Stop Recording")
+        self.telemetry_source_label.setText(
+            f"Source ({src_key})" if src_key else "Source"
+        )
+        self.btn_start.setText(
+            f"Start Recording ({start_key})" if start_key else "Start Recording"
+        )
+        self.btn_stop.setText(
+            f"Stop Recording ({stop_key})" if stop_key else "Stop Recording"
+        )
 
     # ---------------------------------------- #
 
@@ -598,8 +605,12 @@ class MainWindow(QtWidgets.QMainWindow):
     def focus_camera(self) -> None:
         self.camera_combo.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
 
+    # ---------------------------------------- #
+
     def focus_telemetry(self) -> None:
         self.telemetry_port_combo.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
+
+    # ---------------------------------------- #
 
     def toggle_fullscreen(self) -> None:
         if self.isFullScreen():

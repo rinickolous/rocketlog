@@ -12,6 +12,8 @@ class ShortcutSpec:
     key: str
 
 
+# ---------------------------------------- #
+
 SHORTCUTS = {
     "start_recording": ShortcutSpec("Start Recording", "R"),
     "stop_recording": ShortcutSpec("Stop Recording", "S"),
@@ -21,6 +23,9 @@ SHORTCUTS = {
     "focus_camera": ShortcutSpec("Focus Camera", "C"),
     "focus_telemetry": ShortcutSpec("Focus Telemetry", "T"),
 }
+
+
+# ---------------------------------------- #
 
 
 class ShortcutHost(Protocol):
@@ -39,9 +44,15 @@ class ShortcutHost(Protocol):
     def focus_telemetry(self) -> None: ...
 
 
+# ---------------------------------------- #
+
+
 def shortcut_hint(action: str) -> str:
     spec = SHORTCUTS.get(action)
     return "" if spec is None else spec.key
+
+
+# ---------------------------------------- #
 
 
 def install_shortcuts(window: ShortcutHost) -> None:
@@ -56,8 +67,6 @@ def install_shortcuts(window: ShortcutHost) -> None:
     - close()
     """
     qw = cast(QtWidgets.QWidget, window)
-
-    # ---------------------------------------- #
 
     def add(action: str, fn) -> None:
         spec = SHORTCUTS[action]
