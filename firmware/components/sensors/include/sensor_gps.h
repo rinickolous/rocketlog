@@ -26,5 +26,8 @@ esp_err_t gps_read(gps_data_t *data);
 // Check if GPS has a valid fix
 bool gps_has_fix(void);
 
+// Check if GPS module is detected and responsive
+bool gps_is_detected(void);
+
 // Get raw NMEA sentences (for debugging)
 esp_err_t gps_read_raw(char *buffer, size_t buffer_size, size_t *bytes_read);

@@ -69,13 +69,16 @@ esp_err_t sensor_manager_read_all(sensor_data_t *data) {
 	 */
 	/* 		 data->gps.altitude, data->gps.satellites, data->gps.fix_quality); */
 
-	data->gps_ready = (gps_err == ESP_OK && data->gps.valid);
+	// Only consider GPS ready if module is detected AND we have valid data
+	data->gps_ready = (gps_err == ESP_OK && data->gps.valid && gps_is_detected());
 
 	if (data->gps_ready) {
 		ESP_LOGD(TAG, "GPS: lat=%.6f, lon=%.6f, alt=%.1fm, sats=%d, hdop=%.1f", data->gps.latitude, data->gps.longitude,
 				 data->gps.altitude, data->gps.satellites, data->gps.hdop);
+	} else if (!gps_is_detected()) {
+		ESP_LOGE(TAG, "GPS module not detected - check connections");
 	} else {
-		ESP_LOGE(TAG, "GPS no fix or read failed");
+		ESP_LOGD(TAG, "GPS module detected but no fix");
 	}
 
 	return ESP_OK;
@@ -96,9 +99,10 @@ bool sensor_manager_get_health(void) {
 
 	// Consider system healthy if at least one sensor is working
 	bool baro_ok = mpl3115a2_is_ready();
-	bool gps_ok = gps_has_fix(); // This checks for fix, not just initialization
+	bool gps_ok = gps_is_detected(); // Check if GPS module is detected, not just if it has fix
 
-	ESP_LOGD(TAG, "Sensor health - Barometer: %s, GPS fix: %s", baro_ok ? "OK" : "FAIL", gps_ok ? "OK" : "NO FIX");
+	ESP_LOGD(TAG, "Sensor health - Barometer: %s, GPS detected: %s", baro_ok ? "OK" : "FAIL",
+			 gps_ok ? "OK" : "NOT DETECTED");
 
 	return (baro_ok || gps_ok);
 }
