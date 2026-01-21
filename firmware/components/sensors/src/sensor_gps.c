@@ -155,10 +155,9 @@ static void gps_task(void *arg) {
 	ESP_LOGD(TAG, "Starting GPS Task");
 
 	while (1) {
-		/* ESP_LOGD(TAG, "Attempting UART read"); */
 		int len = uart_read_bytes(gps_uart, data, GPS_BUF_SIZE, pdMS_TO_TICKS(100));
 		if (len > 0) {
-			ESP_LOGW(TAG, "successfully read UART!");
+			ESP_LOGD(TAG, "GPS raw: %.*s", len, data);
 			for (int i = 0; i < len; i++) {
 				char c = data[i];
 

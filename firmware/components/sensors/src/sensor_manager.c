@@ -63,16 +63,19 @@ esp_err_t sensor_manager_read_all(sensor_data_t *data) {
 	// Read GPS
 	data->gps_ready = false;
 	esp_err_t gps_err = gps_read(&data->gps);
-	if (gps_err != ESP_OK) {
-		ESP_LOGW(TAG, "GPS read failed: %s", esp_err_to_name(gps_err));
-	}
+
+	/* ESP_LOGW(TAG, "gps_err: 0x%x", gps_err); */
+	/* ESP_LOGW(TAG, "GPS Data: lat=%.6f, lon=%.6f, alt=%.2f, sats=%d, fix=%d", data->gps.latitude, data->gps.longitude,
+	 */
+	/* 		 data->gps.altitude, data->gps.satellites, data->gps.fix_quality); */
+
 	data->gps_ready = (gps_err == ESP_OK && data->gps.valid);
 
 	if (data->gps_ready) {
 		ESP_LOGD(TAG, "GPS: lat=%.6f, lon=%.6f, alt=%.1fm, sats=%d, hdop=%.1f", data->gps.latitude, data->gps.longitude,
 				 data->gps.altitude, data->gps.satellites, data->gps.hdop);
 	} else {
-		ESP_LOGD(TAG, "GPS no fix or read failed");
+		ESP_LOGE(TAG, "GPS no fix or read failed");
 	}
 
 	return ESP_OK;

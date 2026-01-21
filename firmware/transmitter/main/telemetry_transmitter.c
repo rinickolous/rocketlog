@@ -31,6 +31,8 @@
 // Sample rate of 1Hz is the maximum sample rate of the MPL3115A2 barometer.
 static const TickType_t SAMPLE_PERIOD = pdMS_TO_TICKS(1000);
 
+static const char *TAG = "transmitter";
+
 #define RGB_LED_GPIO ROCKETLOG_RGB_LED_GPIO
 
 static led_strip_handle_t led_strip;
@@ -114,11 +116,6 @@ static void status_led_update(void) {
 static void telemetry_task(void *arg) {
 	(void)arg;
 
-	esp_log_level_set("*", ESP_LOG_DEBUG);
-
-	// Keep ESP logging enabled so idf.py monitor is readable.
-	// (Binary-framed output is disabled by default below.)
-
 	// Install USB Serial/JTAG driver for host commands.
 	usb_serial_jtag_driver_config_t cfg = {
 		.rx_buffer_size = 1024,
@@ -129,15 +126,15 @@ static void telemetry_task(void *arg) {
 	// stdout is not used for framing; keep it quiet anyway.
 	setvbuf(stdout, NULL, _IONBF, 0);
 
-	ESP_LOGI("rocketlog", "Transmitter started");
-	ESP_LOGI("rocketlog", "USB Serial/JTAG ready");
+	ESP_LOGI(TAG, "Transmitter started");
+	ESP_LOGI(TAG, "USB Serial/JTAG ready");
 
 	// Initialize all sensors through the sensor manager
 	const esp_err_t sensor_err = sensor_manager_init();
 	if (sensor_err == ESP_OK) {
-		ESP_LOGI("rocketlog", "Sensors initialized successfully");
+		ESP_LOGI(TAG, "Sensors initialized successfully");
 	} else {
-		ESP_LOGW("rocketlog", "Sensor initialization had issues, continuing anyway: %s", esp_err_to_name(sensor_err));
+		ESP_LOGW(TAG, "Sensor initialization had issues, continuing anyway: %s", esp_err_to_name(sensor_err));
 	}
 
 	const double t0 = rocketlog_monotonic_seconds();
@@ -147,7 +144,7 @@ static void telemetry_task(void *arg) {
 		const double t_unix = rocketlog_current_unix_time();
 		/* if (!rocketlog_time_is_set()) { */
 		/* 	// Skip output until time is set */
-		/* 	ESP_LOGW("rocketlog", "Waiting for time sync..."); */
+		/* 	ESP_LOGW(TAG, "Waiting for time sync..."); */
 		/* 	vTaskDelay(SAMPLE_PERIOD); */
 		/* 	continue; */
 		/* } */
@@ -155,20 +152,20 @@ static void telemetry_task(void *arg) {
 		// Read all sensors
 		const esp_err_t read_err = sensor_manager_read_all(&sensor_data);
 		if (read_err != ESP_OK) {
-			ESP_LOGW("rocketlog", "Sensor read failed: %s", esp_err_to_name(read_err));
+			ESP_LOGW(TAG, "Sensor read failed: %s", esp_err_to_name(read_err));
 		}
 
 		// Log sensor data for debugging
 		if (sensor_data.barometer_ready) {
-			ESP_LOGI("rocketlog", "Barometer: %.1f Pa, %.1f C", sensor_data.barometer.pressure_pa,
+			ESP_LOGI(TAG, "Barometer: %.1f Pa, %.1f C", sensor_data.barometer.pressure_pa,
 					 sensor_data.barometer.temperature_c);
 		}
 
 		if (sensor_data.gps_ready) {
-			ESP_LOGI("rocketlog", "GPS: lat=%.6f, lon=%.6f, alt=%.1fm, sats=%d", sensor_data.gps.latitude,
+			ESP_LOGI(TAG, "GPS: lat=%.6f, lon=%.6f, alt=%.1fm, sats=%d", sensor_data.gps.latitude,
 					 sensor_data.gps.longitude, sensor_data.gps.altitude, sensor_data.gps.satellites);
 		} else {
-			ESP_LOGD("rocketlog", "GPS no fix");
+			ESP_LOGD(TAG, "GPS no fix");
 		}
 
 		// Prepare telemetry sample
