@@ -61,6 +61,45 @@ static i2c_master_dev_handle_t mpl_dev;
 #define GPS6MV2_ADDR 0x42
 
 /* ---------------------------------------- */
+/*  LED Functions                           */
+/* ---------------------------------------- */
+
+static void status_led_init(void) {
+	led_strip_config_t strip_config = {
+		.strip_gpio_num = RGB_LED_GPIO,
+		.max_leds = 1,
+		.led_model = LED_MODEL_SK6812,
+		.flags.invert_out = false,
+	};
+
+	led_strip_rmt_config_t rmt_config = {
+		.clk_src = RMT_CLK_SRC_DEFAULT,
+		.resolution_hz = 10 * 1000 * 1000, // 10 MHz
+		.mem_block_symbols = 64,
+	};
+
+	ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip));
+	led_strip_clear(led_strip);
+	led_strip_refresh(led_strip);
+}
+
+/* ---------------------------------------- */
+
+static void status_led_update(void) {
+	// Transmitter stub mode: visually differentiate from receiver.
+	// Dim pulse blue.
+	double t = rocketlog_monotonic_seconds();
+	uint8_t brightness = (uint8_t)((sin(t * 2.0) + 1.0) / 2.0 * 16.0);
+	led_strip_set_pixel(led_strip, 0, 0, 0, brightness);
+	led_strip_refresh(led_strip);
+}
+
+static void status_led_set(uint32_t r, uint32_t g, uint32_t b) {
+	led_strip_set_pixel(led_strip, 0, r, g, b);
+	led_strip_refresh(led_strip);
+}
+
+/* ---------------------------------------- */
 /*  I2C Functions                           */
 /* ---------------------------------------- */
 
@@ -152,6 +191,7 @@ static esp_err_t i2c_write_reg(uint8_t reg, uint8_t value) {
 
 // NOTE: sometimes the data seems to be malformed or we get a partial reading, resulting in the data showing nonsese
 // values.
+// TODO: fix
 static esp_err_t i2c_read_regs(uint8_t start_reg, uint8_t *out, size_t out_len) {
 	if (mpl_dev == NULL) {
 		ESP_LOGE("rocketlog", "i2c_read_regs: mpl_dev is NULL");
@@ -162,7 +202,12 @@ static esp_err_t i2c_read_regs(uint8_t start_reg, uint8_t *out, size_t out_len) 
 		return ESP_ERR_INVALID_ARG;
 	}
 
-	return i2c_master_transmit_receive(mpl_dev, &start_reg, 1, out, out_len, 50);
+	esp_err_t err = i2c_master_transmit_receive(mpl_dev, &start_reg, 1, out, out_len, 50);
+	if (err != ESP_OK) {
+		ESP_LOGE("rocketlog", "Error reading data registers: %s (0x%x)", esp_err_to_name(err), (unsigned)err);
+	}
+	ESP_LOGI("rocketlog", "i2c_read_regs: read data: 0x%x", out);
+	return err;
 }
 
 static esp_err_t mpl3115a2_init(void) {
@@ -207,21 +252,21 @@ static esp_err_t mpl3115a2_read(float *pressure_pa_out, float *temp_c_out) {
 
 	// STATUS: PDR (bit2) and TDR (bit1). In barometer mode, pressure registers hold pressure.
 	// If not ready yet, kick a one-shot measurement and retry a few times.
-	for (int attempt = 0; attempt < 10 && ((status & 0x06) != 0x06); attempt++) {
-		// CTRL_REG1: set OST (one-shot trigger) while keeping current mode bits.
-		uint8_t ctrl = 0;
-		(void)i2c_read_regs(MPL3115A2_REG_CTRL_REG1, &ctrl, 1);
-		(void)i2c_write_reg(MPL3115A2_REG_CTRL_REG1, (uint8_t)(ctrl | 0x40));
-		vTaskDelay(pdMS_TO_TICKS(100));
-		err = i2c_read_regs(MPL3115A2_REG_STATUS, &status, 1);
-		if (err != ESP_OK) {
-			return err;
-		}
-	}
+	/* for (int attempt = 0; attempt < 10 && ((status & 0x06) != 0x06); attempt++) { */
+	/* 	// CTRL_REG1: set OST (one-shot trigger) while keeping current mode bits. */
+	/* 	uint8_t ctrl = 0; */
+	/* 	(void)i2c_read_regs(MPL3115A2_REG_CTRL_REG1, &ctrl, 1); */
+	/* 	(void)i2c_write_reg(MPL3115A2_REG_CTRL_REG1, (uint8_t)(ctrl | 0x40)); */
+	/* vTaskDelay(pdMS_TO_TICKS(100)); */
+	/* 	err = i2c_read_regs(MPL3115A2_REG_STATUS, &status, 1); */
+	/* 	if (err != ESP_OK) { */
+	/* 		return err; */
+	/* 	} */
+	/* } */
 
-	if ((status & 0x06) != 0x06) {
-		return ESP_ERR_TIMEOUT;
-	}
+	/* if ((status & 0x06) != 0x06) { */
+	/* 	return ESP_ERR_TIMEOUT; */
+	/* } */
 
 	uint8_t buf[5] = {0};
 	err = i2c_read_regs(MPL3115A2_REG_OUT_P_MSB, buf, sizeof(buf));
@@ -229,6 +274,7 @@ static esp_err_t mpl3115a2_read(float *pressure_pa_out, float *temp_c_out) {
 		ESP_LOGE("rocketlog", "Error reading data registers: %s (0x%x)", esp_err_to_name(err), (unsigned)err);
 		return err;
 	}
+
 	ESP_LOGI("rocketlog", "MPL3115A2 raw: %02x %02x %02x %02x %02x", buf[0], buf[1], buf[2], buf[3], buf[4]);
 
 	// Pressure: 20-bit unsigned (Pascals).
@@ -244,6 +290,7 @@ static esp_err_t mpl3115a2_read(float *pressure_pa_out, float *temp_c_out) {
 	}
 	*temp_c_out = (float)temp_raw / 16.0f;
 
+	status_led_set(0, 16, 0); // Green: successful read
 	return ESP_OK;
 }
 
@@ -256,6 +303,8 @@ static void i2c_task(void *arg) {
 		vTaskDelay(pdMS_TO_TICKS(100));
 	}
 	while (1) {
+		status_led_set(16, 16, 0);		// Yellow: Processing
+		vTaskDelay(pdMS_TO_TICKS(100)); // Slight delay to show yellow
 		float press_pa = 0.0f;
 		float temp_c = 0.0f;
 		const esp_err_t err = mpl3115a2_read(&press_pa, &temp_c);
@@ -265,42 +314,8 @@ static void i2c_task(void *arg) {
 		} else {
 			ESP_LOGE("rocketlog", "MPL3115A2 read failed: %s (0x%x)", esp_err_to_name(err), (unsigned)err);
 		}
-		vTaskDelay(pdMS_TO_TICKS(1000));
+		vTaskDelay(pdMS_TO_TICKS(900));
 	}
-}
-
-/* ---------------------------------------- */
-/*  LED Functions                           */
-/* ---------------------------------------- */
-
-static void status_led_init(void) {
-	led_strip_config_t strip_config = {
-		.strip_gpio_num = RGB_LED_GPIO,
-		.max_leds = 1,
-		.led_model = LED_MODEL_SK6812,
-		.flags.invert_out = false,
-	};
-
-	led_strip_rmt_config_t rmt_config = {
-		.clk_src = RMT_CLK_SRC_DEFAULT,
-		.resolution_hz = 10 * 1000 * 1000, // 10 MHz
-		.mem_block_symbols = 64,
-	};
-
-	ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip));
-	led_strip_clear(led_strip);
-	led_strip_refresh(led_strip);
-}
-
-/* ---------------------------------------- */
-
-static void status_led_update(void) {
-	// Transmitter stub mode: visually differentiate from receiver.
-	// Dim pulse blue.
-	double t = rocketlog_monotonic_seconds();
-	uint8_t brightness = (uint8_t)((sin(t * 2.0) + 1.0) / 2.0 * 16.0);
-	led_strip_set_pixel(led_strip, 0, 0, 0, brightness);
-	led_strip_refresh(led_strip);
 }
 
 /* ---------------------------------------- */
@@ -421,7 +436,7 @@ static void time_sync_task(void *arg) {
 
 	uint8_t pkt[512];
 	while (1) {
-		status_led_update();
+		/* status_led_update(); */
 
 		// IMPORTANT: Do not block here. Use non-blocking USB Serial/JTAG reads.
 		const int pkt_len = serial_read_frame(pkt, sizeof(pkt));
@@ -474,15 +489,16 @@ static void time_sync_task(void *arg) {
 
 void app_main(void) {
 	status_led_init();
+	status_led_set(0, 0, 16); // Blue: startup
 
 	// IMPORTANT: Do not initialize ESP-IDF driver objects here.
 	// app_main runs in the context of the main task, but some drivers allocate
 	// internal FreeRTOS objects and are happier if initialized from an already-running
 	// application task. We'll init I2C + MPL inside telemetry_task.
 
-	status_led_update();
+	/* status_led_update(); */
 
-	xTaskCreate(time_sync_task, "time_sync_task", 4096, NULL, 6, NULL);
+	/* xTaskCreate(time_sync_task, "time_sync_task", 4096, NULL, 6, NULL); */
 	xTaskCreate(telemetry_task, "telemetry_task", 4096, NULL, 5, NULL);
 	xTaskCreate(i2c_task, "i2c_task", 4096, NULL, 5, NULL);
 }
