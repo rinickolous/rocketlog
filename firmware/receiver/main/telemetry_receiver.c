@@ -137,7 +137,7 @@ static void telemetry_task(void *arg) {
 	(void)arg;
 
 	// Disable ESP logging to keep stdout as a binary-framed stream.
-	esp_log_level_set("*", ESP_LOG_NONE);
+	esp_log_level_set("*", ESP_LOG_DEBUG);
 
 	// Install USB Serial/JTAG driver for host commands.
 	usb_serial_jtag_driver_config_t cfg = {

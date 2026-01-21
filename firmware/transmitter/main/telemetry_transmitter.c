@@ -7,13 +7,12 @@
 
 #include "rocketlog_board.h"
 #include "rocketlog_time.h"
-#include "telemetry_packet.h"
 #include "telemetry_protocol.h"
+#include "telemetry_packet.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "driver/i2c_master.h"
 #include "driver/rmt_tx.h"
 
 #include "esp_err.h"
@@ -21,6 +20,7 @@
 #include "esp_timer.h"
 #include "led_strip.h"
 #include "led_strip_rmt.h"
+#include "sensor_manager.h"
 
 #include "driver/usb_serial_jtag.h"
 
@@ -28,120 +28,15 @@
 /*  Config Knobs                            */
 /* ---------------------------------------- */
 
-/* Time keeping moved to components/common (rocketlog_time.*) */
-
-static const TickType_t SAMPLE_PERIOD = pdMS_TO_TICKS(100);
+// Sample rate of 1Hz is the maximum sample rate of the MPL3115A2 barometer.
+static const TickType_t SAMPLE_PERIOD = pdMS_TO_TICKS(1000);
 
 #define RGB_LED_GPIO ROCKETLOG_RGB_LED_GPIO
 
 static led_strip_handle_t led_strip;
 
-// I2C
-
-#define I2C_PORT I2C_NUM_0
-
-static i2c_master_bus_handle_t i2c_bus;
-static i2c_master_dev_handle_t mpl_dev;
-#define I2C_SCL 11
-#define I2C_SDA 12
-#define I2C_FREQ 40000
-
-// MPL3115A2 barometric pressure sensor (barometer mode)
-#define MPL3115A2_ADDR 0x60
-#define MPL3115A2_REG_STATUS 0x00
-#define MPL3115A2_REG_OUT_P_MSB 0x01
-#define MPL3115A2_REG_OUT_T_MSB 0x04
-#define MPL3115A2_REG_WHO_AM_I 0x0C
-#define MPL3115A2_REG_CTRL_REG1 0x26
-#define MPL3115A2_REG_PT_DATA_CFG 0x13
-
-#define MPL3115A2_WHO_AM_I_VAL 0xC4
-
-// GY-GPS6MV2 GPS module
-#define GPS6MV2_ADDR 0x42
-
 /* ---------------------------------------- */
-/*  LED Functions                           */
-/* ---------------------------------------- */
-
-static void status_led_init(void) {
-	led_strip_config_t strip_config = {
-		.strip_gpio_num = RGB_LED_GPIO,
-		.max_leds = 1,
-		.led_model = LED_MODEL_SK6812,
-		.flags.invert_out = false,
-	};
-
-	led_strip_rmt_config_t rmt_config = {
-		.clk_src = RMT_CLK_SRC_DEFAULT,
-		.resolution_hz = 10 * 1000 * 1000, // 10 MHz
-		.mem_block_symbols = 64,
-	};
-
-	ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip));
-	led_strip_clear(led_strip);
-	led_strip_refresh(led_strip);
-}
-
-/* ---------------------------------------- */
-
-static void status_led_update(void) {
-	// Transmitter stub mode: visually differentiate from receiver.
-	// Dim pulse blue.
-	double t = rocketlog_monotonic_seconds();
-	uint8_t brightness = (uint8_t)((sin(t * 2.0) + 1.0) / 2.0 * 16.0);
-	led_strip_set_pixel(led_strip, 0, 0, 0, brightness);
-	led_strip_refresh(led_strip);
-}
-
-static void status_led_set(uint32_t r, uint32_t g, uint32_t b) {
-	led_strip_set_pixel(led_strip, 0, r, g, b);
-	led_strip_refresh(led_strip);
-}
-
-/* ---------------------------------------- */
-/*  I2C Functions                           */
-/* ---------------------------------------- */
-
-static esp_err_t i2c_init(void) {
-	if (i2c_bus != NULL) {
-		return ESP_OK;
-	}
-
-	i2c_master_bus_config_t bus_cfg = {
-		.i2c_port = I2C_PORT,
-		.sda_io_num = I2C_SDA,
-		.scl_io_num = I2C_SCL,
-		.clk_source = I2C_CLK_SRC_DEFAULT,
-		.glitch_ignore_cnt = 7,
-		.intr_priority = 0,
-		.trans_queue_depth = 0,
-		.flags.enable_internal_pullup = 1,
-		.flags.allow_pd = 0,
-	};
-
-	i2c_device_config_t dev_cfg = {
-		.dev_addr_length = I2C_ADDR_BIT_LEN_7,
-		.device_address = MPL3115A2_ADDR,
-		.scl_speed_hz = I2C_FREQ,
-		.scl_wait_us = 0,
-		.flags.disable_ack_check = 0,
-	};
-
-	esp_err_t err = i2c_new_master_bus(&bus_cfg, &i2c_bus);
-	if (err != ESP_OK) {
-		ESP_LOGE("rocketlog", "i2c_new_master_bus failed: %s", esp_err_to_name(err));
-		return err;
-	}
-	if (i2c_master_probe(i2c_bus, MPL3115A2_ADDR, -1) != ESP_OK) {
-		ESP_LOGE("rocketlog", "MPL3115A2 not found on I2C bus");
-		return ESP_ERR_NOT_FOUND;
-	}
-
-	err = i2c_master_bus_add_device(i2c_bus, &dev_cfg, &mpl_dev);
-	return err;
-}
-
+/*  Serial Communication Functions          */
 /* ---------------------------------------- */
 
 static bool serial_ready(void) {
@@ -180,148 +75,46 @@ static void serial_send_log(rocketlog_log_level_t level, const char *msg) {
 	serial_send_frame(pkt, (size_t)pkt_len);
 }
 
-static esp_err_t i2c_write_reg(uint8_t reg, uint8_t value) {
-	if (mpl_dev == NULL) {
-		return ESP_ERR_INVALID_STATE;
-	}
+/* ---------------------------------------- */
+/*  LED Functions                           */
+/* ---------------------------------------- */
 
-	uint8_t buf[2] = {reg, value};
-	return i2c_master_transmit(mpl_dev, buf, sizeof(buf), 50);
+static void status_led_init(void) {
+	led_strip_config_t strip_config = {
+		.strip_gpio_num = RGB_LED_GPIO,
+		.max_leds = 1,
+		.led_model = LED_MODEL_SK6812,
+		.flags.invert_out = false,
+	};
+
+	led_strip_rmt_config_t rmt_config = {
+		.clk_src = RMT_CLK_SRC_DEFAULT,
+		.resolution_hz = 10 * 1000 * 1000, // 10 MHz
+		.mem_block_symbols = 64,
+	};
+
+	ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip));
+	led_strip_clear(led_strip);
+	led_strip_refresh(led_strip);
 }
 
-// NOTE: sometimes the data seems to be malformed or we get a partial reading, resulting in the data showing nonsese
-// values.
-// TODO: fix
-static esp_err_t i2c_read_regs(uint8_t start_reg, uint8_t *out, size_t out_len) {
-	if (mpl_dev == NULL) {
-		ESP_LOGE("rocketlog", "i2c_read_regs: mpl_dev is NULL");
-		return ESP_ERR_INVALID_STATE;
-	}
-	if (out == NULL || out_len == 0) {
-		ESP_LOGE("rocketlog", "i2c_read_regs: invalid output buffer");
-		return ESP_ERR_INVALID_ARG;
-	}
-
-	esp_err_t err = i2c_master_transmit_receive(mpl_dev, &start_reg, 1, out, out_len, 50);
-	if (err != ESP_OK) {
-		ESP_LOGE("rocketlog", "Error reading data registers: %s (0x%x)", esp_err_to_name(err), (unsigned)err);
-	}
-	ESP_LOGI("rocketlog", "i2c_read_regs: read data: 0x%x", out);
-	return err;
+static void status_led_update(void) {
+	// Transmitter stub mode: visually differentiate from receiver.
+	// Dim pulse blue.
+	double t = rocketlog_monotonic_seconds();
+	uint8_t brightness = (uint8_t)((sin(t * 2.0) + 1.0) / 2.0 * 16.0);
+	led_strip_set_pixel(led_strip, 0, 0, 0, brightness);
+	led_strip_refresh(led_strip);
 }
 
-static esp_err_t mpl3115a2_init(void) {
-	uint8_t who = 0;
-	esp_err_t err = i2c_read_regs(MPL3115A2_REG_WHO_AM_I, &who, 1);
-	ESP_LOGI("rocketlog", "MPL3115A2 WHO_AM_I read: err=%s (0x%x) who=0x%02x", esp_err_to_name(err), (unsigned)err,
-			 who);
-	if (err != ESP_OK) {
-		return err;
-	}
-
-	if (who != MPL3115A2_WHO_AM_I_VAL) {
-		ESP_LOGE("rocketlog", "MPL3115A2 WHO_AM_I mismatch: expected=0x%02X got=0x%02X", MPL3115A2_WHO_AM_I_VAL, who);
-		return ESP_ERR_INVALID_RESPONSE;
-	}
-
-	// Enable data flags for pressure/altitude + temperature.
-	// PT_DATA_CFG: set DREM | PDEFE | TDEFE
-	err = i2c_write_reg(MPL3115A2_REG_PT_DATA_CFG, 0x07);
-	if (err != ESP_OK) {
-		return err;
-	}
-
-	// CTRL_REG1: ALT=0 (barometer), OS=128 (0b111), SBYB=0 (standby)
-	// 0x19 = 0001 1001
-	err = i2c_write_reg(MPL3115A2_REG_CTRL_REG1, 0x19);
-	return err;
-}
-
-static esp_err_t mpl3115a2_read(float *pressure_pa_out, float *temp_c_out) {
-	if (pressure_pa_out == NULL || temp_c_out == NULL) {
-		ESP_LOGE("rocketlog", "Invalid initial values provided");
-		return ESP_ERR_INVALID_ARG;
-	}
-
-	uint8_t status = 0;
-	esp_err_t err = i2c_read_regs(MPL3115A2_REG_STATUS, &status, 1);
-	if (err != ESP_OK) {
-		ESP_LOGE("rocketlog", "i2c_read_regs failed err=%s (0x%x)", esp_err_to_name(err), (unsigned)err);
-		return err;
-	}
-
-	// STATUS: PDR (bit2) and TDR (bit1). In barometer mode, pressure registers hold pressure.
-	// If not ready yet, kick a one-shot measurement and retry a few times.
-	/* for (int attempt = 0; attempt < 10 && ((status & 0x06) != 0x06); attempt++) { */
-	/* 	// CTRL_REG1: set OST (one-shot trigger) while keeping current mode bits. */
-	/* 	uint8_t ctrl = 0; */
-	/* 	(void)i2c_read_regs(MPL3115A2_REG_CTRL_REG1, &ctrl, 1); */
-	/* 	(void)i2c_write_reg(MPL3115A2_REG_CTRL_REG1, (uint8_t)(ctrl | 0x40)); */
-	/* vTaskDelay(pdMS_TO_TICKS(100)); */
-	/* 	err = i2c_read_regs(MPL3115A2_REG_STATUS, &status, 1); */
-	/* 	if (err != ESP_OK) { */
-	/* 		return err; */
-	/* 	} */
-	/* } */
-
-	/* if ((status & 0x06) != 0x06) { */
-	/* 	return ESP_ERR_TIMEOUT; */
-	/* } */
-
-	uint8_t buf[5] = {0};
-	err = i2c_read_regs(MPL3115A2_REG_OUT_P_MSB, buf, sizeof(buf));
-	if (err != ESP_OK) {
-		ESP_LOGE("rocketlog", "Error reading data registers: %s (0x%x)", esp_err_to_name(err), (unsigned)err);
-		return err;
-	}
-
-	ESP_LOGI("rocketlog", "MPL3115A2 raw: %02x %02x %02x %02x %02x", buf[0], buf[1], buf[2], buf[3], buf[4]);
-
-	// Pressure: 20-bit unsigned (Pascals).
-	uint32_t press_raw = ((uint32_t)buf[0] << 16) | ((uint32_t)buf[1] << 8) | buf[2];
-	press_raw >>= 4;
-	*pressure_pa_out = (float)press_raw / 4.0f;
-
-	// Temperature: 12-bit two's complement, Q8.4 (degC).
-	int16_t temp_raw = (int16_t)(((uint16_t)buf[3] << 8) | (uint16_t)buf[4]);
-	temp_raw >>= 4;
-	if (temp_raw & (1 << 11)) {
-		temp_raw -= (1 << 12);
-	}
-	*temp_c_out = (float)temp_raw / 16.0f;
-
-	status_led_set(0, 16, 0); // Green: successful read
-	return ESP_OK;
-}
-
-static void i2c_task(void *arg) {
-	(void)arg;
-
-	// Periodic MPL3115A2 readings.
-	// Wait until I2C has been initialized by telemetry_task.
-	while (mpl_dev == NULL) {
-		vTaskDelay(pdMS_TO_TICKS(100));
-	}
-	while (1) {
-		status_led_set(16, 16, 0);		// Yellow: Processing
-		vTaskDelay(pdMS_TO_TICKS(100)); // Slight delay to show yellow
-		float press_pa = 0.0f;
-		float temp_c = 0.0f;
-		const esp_err_t err = mpl3115a2_read(&press_pa, &temp_c);
-
-		if (err == ESP_OK) {
-			ESP_LOGI("rocketlog", "MPL3115A2: press=%.1f Pa, temp=%.1f C", press_pa, temp_c);
-		} else {
-			ESP_LOGE("rocketlog", "MPL3115A2 read failed: %s (0x%x)", esp_err_to_name(err), (unsigned)err);
-		}
-		vTaskDelay(pdMS_TO_TICKS(900));
-	}
-}
-
+/* ---------------------------------------- */
+/*  Telemetry Functions                     */
 /* ---------------------------------------- */
 
 static void telemetry_task(void *arg) {
 	(void)arg;
+
+	esp_log_level_set("*", ESP_LOG_DEBUG);
 
 	// Keep ESP logging enabled so idf.py monitor is readable.
 	// (Binary-framed output is disabled by default below.)
@@ -338,55 +131,61 @@ static void telemetry_task(void *arg) {
 
 	ESP_LOGI("rocketlog", "Transmitter started");
 	ESP_LOGI("rocketlog", "USB Serial/JTAG ready");
-	const esp_err_t i2c_err = i2c_init();
-	if (i2c_err != ESP_OK) {
-		ESP_LOGE("rocketlog", "I2C init failed: %s (0x%x)", esp_err_to_name(i2c_err), (unsigned)i2c_err);
-	} else {
-		ESP_LOGI("rocketlog", "I2C init OK");
-	}
 
-	const esp_err_t mpl_err = (i2c_err == ESP_OK) ? mpl3115a2_init() : ESP_FAIL;
-	if (mpl_err == ESP_OK) {
-		ESP_LOGI("rocketlog", "MPL3115A2 init OK");
+	// Initialize all sensors through the sensor manager
+	const esp_err_t sensor_err = sensor_manager_init();
+	if (sensor_err == ESP_OK) {
+		ESP_LOGI("rocketlog", "Sensors initialized successfully");
 	} else {
-		ESP_LOGE("rocketlog", "MPL3115A2 init error: %s (0x%x)", esp_err_to_name(mpl_err), (unsigned)mpl_err);
+		ESP_LOGW("rocketlog", "Sensor initialization had issues, continuing anyway: %s", esp_err_to_name(sensor_err));
 	}
 
 	const double t0 = rocketlog_monotonic_seconds();
+	sensor_data_t sensor_data;
 
 	while (1) {
 		const double t_unix = rocketlog_current_unix_time();
-		if (!rocketlog_time_is_set()) {
-			// Skip output until time is set
+		/* if (!rocketlog_time_is_set()) { */
+		/* 	// Skip output until time is set */
+		/* 	ESP_LOGW("rocketlog", "Waiting for time sync..."); */
+		/* 	vTaskDelay(SAMPLE_PERIOD); */
+		/* 	continue; */
+		/* } */
 
-			vTaskDelay(SAMPLE_PERIOD);
-			continue;
-		}
-		const double t = t_unix - t0;
-
-		float press_pa = 0.0f;
-		float temp_c = 0.0f;
-		const bool mpl_ok = (mpl3115a2_read(&press_pa, &temp_c) == ESP_OK);
-
-		// Velocity and battery are placeholders until IMU/ADC are wired.
-		double vel = 0.0;
-		double batt = 12.6 - 0.002 * t;
-
-		if (!mpl_ok) {
-			ESP_LOGW("rocketlog", "MPL3115A2 read failed");
+		// Read all sensors
+		const esp_err_t read_err = sensor_manager_read_all(&sensor_data);
+		if (read_err != ESP_OK) {
+			ESP_LOGW("rocketlog", "Sensor read failed: %s", esp_err_to_name(read_err));
 		}
 
-		// Pressure from MPL3115A2 is Pa. For now, use as altitude placeholder.
-		double alt = mpl_ok ? (double)press_pa / 1000.0 : 0.0; // kPa for now
-		double temp = mpl_ok ? (double)temp_c : 0.0;
+		// Log sensor data for debugging
+		if (sensor_data.barometer_ready) {
+			ESP_LOGI("rocketlog", "Barometer: %.1f Pa, %.1f C", sensor_data.barometer.pressure_pa,
+					 sensor_data.barometer.temperature_c);
+		}
 
+		if (sensor_data.gps_ready) {
+			ESP_LOGI("rocketlog", "GPS: lat=%.6f, lon=%.6f, alt=%.1fm, sats=%d", sensor_data.gps.latitude,
+					 sensor_data.gps.longitude, sensor_data.gps.altitude, sensor_data.gps.satellites);
+		} else {
+			ESP_LOGD("rocketlog", "GPS no fix");
+		}
+
+		// Prepare telemetry sample
 		telemetry_sample_t sample = {
 			.unix_time = t_unix,
-			.altitude = (float)alt,
-			.velocity = (float)vel,
-			.battery = (float)batt,
-			.temperature = (float)temp,
+			.altitude =
+				sensor_data.barometer_ready ? (sensor_data.barometer.pressure_pa / 1000.0f) : 0.0f, // kPa for now
+			.velocity = 0.0f,						   // Placeholder until IMU is implemented
+			.battery = 12.6f - 0.002f * (t_unix - t0), // Simple battery simulation
+			.temperature = sensor_data.barometer_ready ? sensor_data.barometer.temperature_c : 0.0f,
+			.gps_latitude = sensor_data.gps_ready ? sensor_data.gps.latitude : 0.0,
+			.gps_longitude = sensor_data.gps_ready ? sensor_data.gps.longitude : 0.0,
+			.gps_altitude = sensor_data.gps_ready ? sensor_data.gps.altitude : 0.0f,
+			.gps_satellites = sensor_data.gps_ready ? sensor_data.gps.satellites : 0,
+			.gps_valid = sensor_data.gps_ready,
 		};
+
 		// Temporarily disable binary-framed telemetry output so idf.py monitor
 		// remains readable while debugging sensor wiring.
 		(void)sample;
@@ -395,6 +194,8 @@ static void telemetry_task(void *arg) {
 	}
 }
 
+/* ---------------------------------------- */
+/*  Time Sync Functions                     */
 /* ---------------------------------------- */
 
 static int serial_read_frame(uint8_t *out, size_t out_len) {
@@ -436,7 +237,7 @@ static void time_sync_task(void *arg) {
 
 	uint8_t pkt[512];
 	while (1) {
-		/* status_led_update(); */
+		status_led_update();
 
 		// IMPORTANT: Do not block here. Use non-blocking USB Serial/JTAG reads.
 		const int pkt_len = serial_read_frame(pkt, sizeof(pkt));
@@ -489,16 +290,14 @@ static void time_sync_task(void *arg) {
 
 void app_main(void) {
 	status_led_init();
-	status_led_set(0, 0, 16); // Blue: startup
 
 	// IMPORTANT: Do not initialize ESP-IDF driver objects here.
 	// app_main runs in the context of the main task, but some drivers allocate
 	// internal FreeRTOS objects and are happier if initialized from an already-running
-	// application task. We'll init I2C + MPL inside telemetry_task.
+	// application task. We'll init sensors inside telemetry_task.
 
-	/* status_led_update(); */
+	status_led_update();
 
-	/* xTaskCreate(time_sync_task, "time_sync_task", 4096, NULL, 6, NULL); */
+	xTaskCreate(time_sync_task, "time_sync_task", 4096, NULL, 6, NULL);
 	xTaskCreate(telemetry_task, "telemetry_task", 4096, NULL, 5, NULL);
-	xTaskCreate(i2c_task, "i2c_task", 4096, NULL, 5, NULL);
 }

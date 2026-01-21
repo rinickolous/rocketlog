@@ -2,12 +2,13 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define TELEMETRY_FIELDS_COUNT 5
+#define TELEMETRY_FIELDS_COUNT 9
 
 typedef struct {
 	double unix_time;
@@ -15,6 +16,12 @@ typedef struct {
 	float velocity;
 	float battery;
 	float temperature;
+	// GPS fields (set to 0 if no GPS fix)
+	double gps_latitude;
+	double gps_longitude;
+	float gps_altitude;
+	uint8_t gps_satellites;
+	bool gps_valid;
 } telemetry_sample_t;
 
 /**

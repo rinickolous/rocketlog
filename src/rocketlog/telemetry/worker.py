@@ -76,7 +76,7 @@ class TelemetryWorker(QtCore.QObject):
 
         flash_cfg = load_firmware_flash_config("receiver")
 
-        self._port = port or flash_cfg.port or "/dev/ttyACM1"
+        self._port = port or flash_cfg.port or "/dev/ttyACM0"
         self._baud = baud or flash_cfg.baud or 115200
         self._reconnect_interval_s = reconnect_interval_s
 
