@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include "esp_err.h"
 
-// GY-GPS6MV2 GPS module interface (UART-based)
+// GY-GPS6MV2 GPS module interface
 
 typedef struct {
 	double latitude;	 // Degrees, positive = North, negative = South
