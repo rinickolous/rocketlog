@@ -1,12 +1,12 @@
 #include "sensor_gps.h"
 #include "rocketlog_board.h"
 
-#include <string.h>
-#include <stdlib.h>
-#include "esp_log.h"
 #include "driver/uart.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <stdlib.h>
+#include <string.h>
 
 static const char *TAG = "sensor_gps";
 
@@ -147,6 +147,8 @@ static void process_nmea_sentence(const char *sentence) {
 	// Parse based on sentence type
 	if (strncmp(sentence, NMEA_GPGGA, 6) == 0) {
 		parse_gga_sentence(sentence, &last_gps_data);
+	} else if (strncmp(sentence, NMEA_GPRMC, 6) == 0) {
+		parse_rmc_sentence(sentence, &last_gps_data);
 	} else if (strncmp(sentence, NMEA_GPRMC, 6) == 0) {
 		parse_rmc_sentence(sentence, &last_gps_data);
 	}

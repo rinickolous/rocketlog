@@ -6,8 +6,8 @@
 #define ROCKETLOG_RGB_LED_GPIO 48
 
 // GPS module UART pins (GY-GPS6MV2)
-#define ROCKETLOG_GPS_TX_GPIO 44
-#define ROCKETLOG_GPS_RX_GPIO 43
+#define ROCKETLOG_GPS_TX_GPIO 17 // Corresponds to RX of GPS module
+#define ROCKETLOG_GPS_RX_GPIO 16 // Corresponds to TX of GPS module
 
 // I2C pins for sensors
 #define ROCKETLOG_I2C_SCL_GPIO 11

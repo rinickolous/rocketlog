@@ -21,8 +21,9 @@ static const char *TAG = "sensor_gps";
 #define GPS_TASK_PRIORITY 5
 
 /* NMEA sentence identifiers */
-#define NMEA_GPGGA "$GPGGA"
-#define NMEA_GPRMC "$GPRMC"
+#define NMEA_GNGGA "$GNGGA"
+#define NMEA_GNRMC "$GNRMC"
+#define NMEA_GNTXT "$GNTXT"
 
 /* Static variables */
 static uart_port_t gps_uart = GPS_UART_NUM;
@@ -79,6 +80,105 @@ static bool validate_nmea_sentence(const char *sentence) {
 }
 
 /* ---------------------------------------- */
+static void parse_gga_sentence(const char *sentence, gps_data_t *data) {
+	ESP_LOGD(TAG, "Parsing GGA sentence");
+
+	// Structure: $GNGGA,time,lat,NS,lon,EW,fix,satellites,hdop,altitude,M,height,M,,*checksum
+	char lat_str[11], lon_str[11], ns_char, ew_char;
+	int fix_quality, satellites;
+	float hdop, altitude;
+
+	if (sscanf(sentence, "$GNGGA,%*[^,],%10[^,],%c,%10[^,],%c,%d,%d,%f,%f", lat_str, &ns_char, lon_str, &ew_char,
+			   &fix_quality, &satellites, &hdop, &altitude) >= 7) {
+
+		// Parse latitude (DDMM.MMMMM -> decimal degrees)
+		double lat_dd = atof(lat_str) / 100.0;
+		int lat_deg = (int)lat_dd;
+		double lat_min = (lat_dd - lat_deg) * 100.0;
+		data->latitude = lat_deg + lat_min / 60.0;
+		if (ns_char == 'S') {
+			data->latitude = -data->latitude;
+		}
+
+		// Parse longitude
+		double lon_dd = atof(lon_str) / 100.0;
+		int lon_deg = (int)lon_dd;
+		double lon_min = (lon_dd - lon_deg) * 100.0;
+		data->longitude = lon_deg + lon_min / 60.0;
+		if (ew_char == 'W') {
+			data->longitude = -data->longitude;
+		}
+
+		data->fix_quality = (uint8_t)fix_quality;
+		data->satellites = (uint8_t)satellites;
+		data->hdop = hdop;
+		data->altitude = altitude;
+
+		// Mark as valid if we have at least a 2D fix (fix_quality >= 1)
+		data->valid = (fix_quality >= 1);
+
+		ESP_LOGI(TAG, "GGA Parsed: lat=%.6f, lon=%.6f, alt=%.1f, sats=%d, fix=%d", data->latitude, data->longitude,
+				 data->altitude, data->satellites, data->fix_quality);
+	}
+}
+
+/* ---------------------------------------- */
+
+static void parse_rmc_sentence(const char *sentence, gps_data_t *data) {
+	ESP_LOGD(TAG, "Parsing RMC sentence");
+
+	// Structure: $GNRMC,time,status,lat,NS,lon,EW,speed,track,date,magvar,magvar_dir,mode*checksum
+	char lat_str[11], lon_str[11], status_char, ns_char, ew_char;
+	float speed_knots, track_degrees;
+
+	if (sscanf(sentence, "$GNRMC,%*[^,],%c,%10[^,],%c,%10[^,],%c,%f,%f", &status_char, lat_str, &ns_char, lon_str,
+			   &ew_char, &speed_knots, &track_degrees) >= 4) {
+
+		// Update valid status based on RMC status ('A' = active, 'V' = void)
+		if (status_char == 'A') {
+			// Parse lat/lon (same as GGA)
+			double lat_dd = atof(lat_str) / 100.0;
+			int lat_deg = (int)lat_dd;
+			double lat_min = (lat_dd - lat_deg) * 100.0;
+			data->latitude = lat_deg + lat_min / 60.0;
+			if (ns_char == 'S') {
+				data->latitude = -data->latitude;
+			}
+
+			double lon_dd = atof(lon_str) / 100.0;
+			int lon_deg = (int)lon_dd;
+			double lon_min = (lon_dd - lon_deg) * 100.0;
+			data->longitude = lon_deg + lon_min / 60.0;
+			if (ew_char == 'W') {
+				data->longitude = -data->longitude;
+			}
+		} else {
+			data->valid = false;
+		}
+
+		ESP_LOGI(TAG, "RMC Parsed: lat=%.6f, lon=%.6f, valid=%s", data->latitude, data->longitude,
+				 data->valid ? "yes" : "no");
+	}
+}
+
+/* ---------------------------------------- */
+
+static void parse_txt_sentence(const char *sentence, gps_data_t *data) {
+	ESP_LOGD(TAG, "Parsing TXT sentence");
+
+	// Structure: $GNTXT,total,number,code,text*checksum
+	int total, number, code;
+	char text[61]; // Max 60 chars + null terminator
+
+	if (sscanf(sentence, "$GNTXT,%d,%d,%d,%60[^*]", &total, &number, &code, text) == 4) {
+		ESP_LOGI(TAG, "TXT Parsed: code=%d, text=%s", code, text);
+		if (strncmp(text, "ANT_OPEN", 7) == 0) {
+			ESP_LOGW(TAG, "GPS Warning: Antenna open circuit detected");
+		}
+	}
+}
+
+/* ---------------------------------------- */
 
 static void process_nmea_sentence(const char *sentence) {
 	if (!validate_nmea_sentence(sentence)) {
@@ -89,7 +189,12 @@ static void process_nmea_sentence(const char *sentence) {
 	ESP_LOGD(TAG, "NMEA: %s", sentence);
 
 	// Parse based on sentence type
-	if (strncmp(sentence, NMEA_GPGGA, 6) == 0) {
+	if (strncmp(sentence, NMEA_GNGGA, 6) == 0) {
+		parse_gga_sentence(sentence, &last_gps_data);
+	} else if (strncmp(sentence, NMEA_GNRMC, 6) == 0) {
+		parse_rmc_sentence(sentence, &last_gps_data);
+	} else if (strncmp(sentence, NMEA_GNTXT, 6) == 0) {
+		parse_txt_sentence(sentence, &last_gps_data);
 	}
 }
 
@@ -104,7 +209,7 @@ static void gps_task(void *arg) {
 			 GPS_BAUD_RATE);
 
 	while (1) {
-		int len = uart_read_bytes(gps_uart, data, GPS_BUF_SIZE, pdMS_TO_TICKS(100));
+		int len = uart_read_bytes(gps_uart, data, GPS_BUF_SIZE, pdMS_TO_TICKS(500));
 
 		if (len <= 0) {
 			if (len == 0) {
@@ -116,7 +221,7 @@ static void gps_task(void *arg) {
 			continue;
 		}
 
-		ESP_LOGD(TAG, "GPS Raw: %.*s", len, data);
+		/* ESP_LOGD(TAG, "GPS Raw: %.*s", len, data); */
 		for (int i = 0; i < len; i++) {
 			char c = data[i];
 
@@ -137,13 +242,14 @@ static void gps_task(void *arg) {
 			}
 		}
 	}
+
+	// TODO: figure out why this is after while and what that does.
+	free(data);
+	vTaskDelete(NULL);
 }
 
 /* ---------------------------------------- */
 
-/**
- * Initialize the GPS module
- */
 esp_err_t gps_init(void) {
 	if (gps_initialized) {
 		return ESP_OK;

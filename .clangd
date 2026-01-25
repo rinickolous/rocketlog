@@ -1,12 +1,33 @@
+# ESP32-S3 clangd configuration for rocketlog project
 CompileFlags:
+  # Remove problematic GCC-specific flags that clangd doesn't understand
+  Remove:
+    - -mlongcalls
+    - -fno-tree-switch-conversion
+    - -fstrict-volatile-bitfields
+    - -fno-shrink-wrap
   Add:
-    # Clangd doesn't understand Xtensa/ESP-IDF flags; silence diagnostics.
-    - -Wno-unknown-warning-option
-    - -Wno-unused-command-line-argument
-    - -Qunused-arguments
-    # Some ESP-IDF headers include toolchain-specific headers.
+    # ESP-IDF system include paths
     - -I/opt/esp-idf/components/newlib/platform_include
     - -I/opt/esp-idf/components/newlib/platform_include/sys
     - -I/opt/esp-idf/components/newlib/esp32/include
     - -I/opt/esp-idf/components/newlib/esp32s3/include
     - -I/opt/esp-idf/components/newlib/port/include
+    # ESP toolchain system headers (updated paths)
+    - -isystem/home/nick/.espressif/tools/xtensa-esp-elf/esp-14.2.0_20251107/xtensa-esp-elf/include
+    - -isystem/home/nick/.espressif/tools/xtensa-esp-elf/esp-14.2.0_20251107/xtensa-esp-elf/xtensa-esp-elf/include
+    - -isystem/home/nick/.espressif/tools/xtensa-esp-elf/esp-14.2.0_20251107/xtensa-esp-elf/sys-include
+    - -isystem/home/nick/.espressif/tools/xtensa-esp-elf/esp-14.2.0_20251107/xtensa-esp-elf/lib/gcc/xtensa-esp-elf/14.2.0/include-fixed
+    # Suppress remaining unknown warnings
+    - -Wno-unknown-warning-option
+    - -Wno-unused-command-line-argument
+    - -Qunused-arguments
+# Specify GCC compiler for system include extraction (not clang)
+Compiler:
+  - /home/nick/.espressif/tools/xtensa-esp-elf/esp-14.2.0_20251107/xtensa-esp-elf/bin/xtensa-esp32s3-elf-gcc
+Index:
+  Background: true
+Diagnostics:
+  Suppress:
+    - pp_file_not_found
+    - unused-includes
