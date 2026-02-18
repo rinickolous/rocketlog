@@ -1,18 +1,21 @@
 #include "sensor_gps.h"
-#include "driver/uart.h"
-#include "esp_err.h"
-#include "esp_log.h"
-#include "freertos/idf_additions.h"
 #include "rocketlog_board.h"
-#include <stdint.h>
+
+#include "driver/uart.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "hal/uart_types.h"
 #include <string.h>
 
 /* ---------------------------------------- */
 /*  Config Knobs                            */
 /* ---------------------------------------- */
 
+/* TAG for logging */
 static const char *TAG = "sensor_gps";
 
+/* UART configuration */
 #define GPS_UART_NUM UART_NUM_1
 #define GPS_BAUD_RATE 9600
 #define GPS_BUF_SIZE 1024
@@ -21,19 +24,30 @@ static const char *TAG = "sensor_gps";
 #define GPS_TASK_PRIORITY 5
 
 /* NMEA sentence identifiers */
-#define NMEA_GNGGA "$GNGGA"
-#define NMEA_GNRMC "$GNRMC"
-#define NMEA_GNTXT "$GNTXT"
+#define NMEA_GPGGA "$GPGGA"
+#define NMEA_GPRMC "$GPRMC"
+#define NMEA_GPTXT "$GPTXT"
+#define NMEA_GPGSA "$GPGSA"
+#define NMEA_GPGSV "$GPGSV"
 
 /* Static variables */
-static uart_port_t gps_uart = GPS_UART_NUM;
-static bool gps_initialized = false;
-static gps_data_t last_gps_data = {0};
-static char nmea_buffer[NMEA_MAX_SENTENCE];
-static int nmea_index = 0;
+static uart_port_t gps_uart = GPS_UART_NUM; /* The UART port on the ESP32_S3 connected to the GPS module */
+static bool gps_initialized = false;		/* State variable to track if GPS has alrady been initialized */
+static gps_data_t last_gps_data = {0};		/* Latest parsed GPS data, updated by the GPS task and read by gps_read() */
+static char nmea_buffer[NMEA_MAX_SENTENCE]; /* Buffer to accumulate incoming NMEA sentence characters until a full
+											   sentence is received */
+static int nmea_index = 0; /* Current index in the NMEA buffer, used to track how many characters have been received for
+							  the current sentence */
 
 /* ---------------------------------------- */
 
+/**
+ * Calculate the NMEA checksum for a given sentence (excluding the starting '$' and the '*' delimiter).
+ * The checksum is computed by XORing all characters between '$' and '*'.
+ *
+ * @param sentence The NMEA sentence to calculate the checksum for.
+ * @return The calculated checksum as an 8-bit unsigned integer.
+ */
 static uint8_t nmea_checksum(const char *sentence) {
 	uint8_t checksum = 0;
 	// Start after $ and before *
@@ -45,6 +59,17 @@ static uint8_t nmea_checksum(const char *sentence) {
 
 /* ---------------------------------------- */
 
+/**
+ * Validate an NMEA sentence by checking its structure and verifying the checksum.
+ * The function checks for:
+ * - Non-null sentence pointer
+ * - Minimum length (at least 6 characters to accommodate "$*XX")
+ * - Presence of '*' character to separate data from checksum
+ * - Correct checksum value matching the calculated checksum
+ *
+ * @param sentence The NMEA sentence string to validate
+ * @return true if the sentence is valid, false otherwise
+ */
 static bool validate_nmea_sentence(const char *sentence) {
 	if (sentence == NULL) {
 		ESP_LOGE(TAG, "NMEA Error: Sentence is NULL");
@@ -80,15 +105,25 @@ static bool validate_nmea_sentence(const char *sentence) {
 }
 
 /* ---------------------------------------- */
+
+/**
+ * Parse a GGA NMEA sentence to extract GPS data such as latitude, longitude, altitude, fix quality, number of
+ * satellites, and HDOP. The function uses sscanf to extract the relevant fields from the sentence and then converts the
+ * latitude and longitude from the DDMM.MMMMM format to decimal degrees. It also updates the gps_data_t structure with
+ * the parsed values and marks it as valid if a fix is present (fix_quality >= 1).
+ *
+ * @param sentence The GGA NMEA sentence string to parse
+ * @param data Pointer to a gps_data_t structure where the parsed data will be stored
+ */
 static void parse_gga_sentence(const char *sentence, gps_data_t *data) {
 	ESP_LOGD(TAG, "Parsing GGA sentence");
 
-	// Structure: $GNGGA,time,lat,NS,lon,EW,fix,satellites,hdop,altitude,M,height,M,,*checksum
+	// Structure: $GPGGA,time,lat,NS,lon,EW,fix,satellites,hdop,altitude,M,height,M,,*checksum
 	char lat_str[11], lon_str[11], ns_char, ew_char;
 	int fix_quality, satellites;
 	float hdop, altitude;
 
-	if (sscanf(sentence, "$GNGGA,%*[^,],%10[^,],%c,%10[^,],%c,%d,%d,%f,%f", lat_str, &ns_char, lon_str, &ew_char,
+	if (sscanf(sentence, "$GPGGA,%*[^,],%10[^,],%c,%10[^,],%c,%d,%d,%f,%f", lat_str, &ns_char, lon_str, &ew_char,
 			   &fix_quality, &satellites, &hdop, &altitude) >= 7) {
 
 		// Parse latitude (DDMM.MMMMM -> decimal degrees)
@@ -110,68 +145,143 @@ static void parse_gga_sentence(const char *sentence, gps_data_t *data) {
 		}
 
 		data->fix_quality = (uint8_t)fix_quality;
-		data->satellites = (uint8_t)satellites;
+		data->num_satellites = (uint8_t)satellites;
 		data->hdop = hdop;
-		data->altitude = altitude;
+		data->altitude_m = altitude;
 
 		// Mark as valid if we have at least a 2D fix (fix_quality >= 1)
 		data->valid = (fix_quality >= 1);
 
-		ESP_LOGI(TAG, "GGA Parsed: lat=%.6f, lon=%.6f, alt=%.1f, sats=%d, fix=%d", data->latitude, data->longitude,
-				 data->altitude, data->satellites, data->fix_quality);
+		ESP_LOGD(TAG, "GGA Parsed: lat=%.6f, lon=%.6f, alt=%.1f, sats=%d, fix=%d", data->latitude, data->longitude,
+				 data->altitude_m, data->num_satellites, data->fix_quality);
 	}
 }
 
 /* ---------------------------------------- */
 
+/**
+ * Parse an RMC NMEA sentence to extract GPS data such as latitude, longitude, speed, and track. The function uses
+ * sscanf to extract the relevant fields from the sentence and then converts the latitude and longitude from the
+ * DDMM.MMMMM format to decimal degrees. It also updates the gps_data_t structure with the parsed values and marks it as
+ * valid if the status character indicates an active fix ('A').
+ *
+ * @param sentence The RMC NMEA sentence string to parse
+ * @param data Pointer to a gps_data_t structure where the parsed data will be stored
+ */
 static void parse_rmc_sentence(const char *sentence, gps_data_t *data) {
 	ESP_LOGD(TAG, "Parsing RMC sentence");
 
-	// Structure: $GNRMC,time,status,lat,NS,lon,EW,speed,track,date,magvar,magvar_dir,mode*checksum
-	char lat_str[11], lon_str[11], status_char, ns_char, ew_char;
-	float speed_knots, track_degrees;
+	// Structure: $GPRMC,time,status,lat,NS,lon,EW,speed,track,date,magvar,magvar_dir,mode*checksum
+	char time_str[16]; // "hhmmss.sss"
+	char status;	   // 'A' or 'V'
 
-	if (sscanf(sentence, "$GNRMC,%*[^,],%c,%10[^,],%c,%10[^,],%c,%f,%f", &status_char, lat_str, &ns_char, lon_str,
-			   &ew_char, &speed_knots, &track_degrees) >= 4) {
+	ESP_LOGD(TAG, "RMC Sentence: %s", sentence);
 
-		// Update valid status based on RMC status ('A' = active, 'V' = void)
-		if (status_char == 'A') {
-			// Parse lat/lon (same as GGA)
-			double lat_dd = atof(lat_str) / 100.0;
-			int lat_deg = (int)lat_dd;
-			double lat_min = (lat_dd - lat_deg) * 100.0;
-			data->latitude = lat_deg + lat_min / 60.0;
-			if (ns_char == 'S') {
-				data->latitude = -data->latitude;
-			}
+	if (sscanf(sentence, "$%*2cRMC,%15[^,],%c", time_str, &status) == 2) {
+		if (status == 'A') {
+			ESP_LOGD(TAG, "RMC status is active, marking GPS data as valid");
+			data->valid = true;
 
-			double lon_dd = atof(lon_str) / 100.0;
-			int lon_deg = (int)lon_dd;
-			double lon_min = (lon_dd - lon_deg) * 100.0;
-			data->longitude = lon_deg + lon_min / 60.0;
-			if (ew_char == 'W') {
-				data->longitude = -data->longitude;
+			char lat_str[16], lon_str[16]; // "llll.ll", "yyyyy.yy"
+			char ns, ew;				   // Either 'N' or 'S' for latitude, and 'E' or 'W' for longitude
+			float speed_knots, course_deg;
+			char date_str[8]; // "ddmmyy"
+
+			int n = sscanf(sentence, "$%*2cRMC,%15[^,],%c,%15[^,],%c,%15[^,],%c,%f,%f,%6[^,]", time_str, &status,
+						   lat_str, &ns, lon_str, &ew, &speed_knots, &course_deg, date_str);
+
+			if (n == 9) {
+				// Parse lat/lon (same as GGA)
+				double lat_dd = atof(lat_str) / 100.0;
+				int lat_deg = (int)lat_dd;
+				double lat_min = (lat_dd - lat_deg) * 100.0;
+				data->latitude = lat_deg + lat_min / 60.0;
+				if (ns == 'S') {
+					data->latitude = -data->latitude;
+				}
+
+				double lon_dd = atof(lon_str) / 100.0;
+				int lon_deg = (int)lon_dd;
+				double lon_min = (lon_dd - lon_deg) * 100.0;
+				data->longitude = lon_deg + lon_min / 60.0;
+				if (ew == 'W') {
+					data->longitude = -data->longitude;
+				}
 			}
 		} else {
+			ESP_LOGD(TAG, "RMC status is void, marking GPS data as invalid");
 			data->valid = false;
 		}
 
-		ESP_LOGI(TAG, "RMC Parsed: lat=%.6f, lon=%.6f, valid=%s", data->latitude, data->longitude,
+		ESP_LOGD(TAG, "RMC Parsed: lat=%.6f, lon=%.6f, valid=%s", data->latitude, data->longitude,
 				 data->valid ? "yes" : "no");
 	}
 }
 
 /* ---------------------------------------- */
 
+/**
+ * Parse a GSA NMEA sentence to extract information about the GPS fix mode and the type of fix (2D/3D). The function
+ * uses sscanf to extract the mode character and fix type integer from the sentence. It then logs the parsed values for
+ * debugging purposes.
+ *
+ * @param sentence The GSA NMEA sentence string to parse
+ * @param data Pointer to a gps_data_t structure (not used in this function but included for consistency with other
+ * parsers)
+ */
+static void parse_gsa_sentence(const char *sentence, gps_data_t *data) {
+	ESP_LOGD(TAG, "Parsing GSA sentence");
+
+	// Structure: $GPGSA,mode,fix_type,sat1,...,sat12,pdop,hdop,vdop*checksum
+	char mode;
+	int fix_type;
+
+	if (sscanf(sentence, "$GPGSA,%c,%d", &mode, &fix_type) == 2) {
+		ESP_LOGD(TAG, "GSA Parsed: mode=%c, fix_type=%d", mode, fix_type);
+	}
+}
+
+/* ---------------------------------------- */
+
+/**
+ * Parse a GSV NMEA sentence to extract information about the satellites in view. The function uses sscanf to extract
+ * the total number of messages, message number, and details about each satellite (ID, elevation, azimuth, SNR). It then
+ * logs the parsed values for debugging purposes.
+ *
+ * @param sentence The GSV NMEA sentence string to parse
+ * @param data Pointer to a gps_data_t structure (not used in this function but included for consistency with other
+ * parsers)
+ */
+static void parse_gsv_sentence(const char *sentence, gps_data_t *data) {
+	ESP_LOGD(TAG, "Parsing GSV sentence");
+
+	// Structure: $GPGSV,total_msgs,msg_num,sat1_id,sat1_elev,sat1_azim,sat1_snr,...*checksum
+	int total_msgs, msg_num;
+	if (sscanf(sentence, "$GPGSV,%d,%d", &total_msgs, &msg_num) == 2) {
+		ESP_LOGD(TAG, "GSV Parsed: total_msgs=%d, msg_num=%d", total_msgs, msg_num);
+	}
+}
+
+/* ---------------------------------------- */
+
+/**
+ * Parse a TXT NMEA sentence to extract any warning or status messages from the GPS module. The function uses sscanf
+ * to extract the total number of messages, message number, code, and text from the sentence. It then checks if the
+ * text contains specific warnings (e.g., "ANT_OPEN") and logs them accordingly.
+ *
+ * @param sentence The TXT NMEA sentence string to parse
+ * @param data Pointer to a gps_data_t structure (not used in this function but included for consistency with other
+ * parsers)
+ */
 static void parse_txt_sentence(const char *sentence, gps_data_t *data) {
 	ESP_LOGD(TAG, "Parsing TXT sentence");
 
-	// Structure: $GNTXT,total,number,code,text*checksum
+	// Structure: $GPTXT,total,number,code,text*checksum
 	int total, number, code;
 	char text[61]; // Max 60 chars + null terminator
 
-	if (sscanf(sentence, "$GNTXT,%d,%d,%d,%60[^*]", &total, &number, &code, text) == 4) {
-		ESP_LOGI(TAG, "TXT Parsed: code=%d, text=%s", code, text);
+	if (sscanf(sentence, "$GPTXT,%d,%d,%d,%60[^*]", &total, &number, &code, text) == 4) {
+		ESP_LOGD(TAG, "TXT Parsed: code=%d, text=%s", code, text);
 		if (strncmp(text, "ANT_OPEN", 7) == 0) {
 			ESP_LOGW(TAG, "GPS Warning: Antenna open circuit detected");
 		}
@@ -180,37 +290,77 @@ static void parse_txt_sentence(const char *sentence, gps_data_t *data) {
 
 /* ---------------------------------------- */
 
+/**
+ * Process a complete NMEA sentence by validating it and then parsing it based on its type (GNGGA, GNRMC, GNTXT).
+ */
 static void process_nmea_sentence(const char *sentence) {
 	if (!validate_nmea_sentence(sentence)) {
 		ESP_LOGE(TAG, "Invalid NMEA sentence: %s", sentence);
 		return;
 	}
 
-	ESP_LOGD(TAG, "NMEA: %s", sentence);
-
 	// Parse based on sentence type
-	if (strncmp(sentence, NMEA_GNGGA, 6) == 0) {
+	if (strncmp(sentence, NMEA_GPGGA, strlen(NMEA_GPGGA)) == 0) {
 		parse_gga_sentence(sentence, &last_gps_data);
-	} else if (strncmp(sentence, NMEA_GNRMC, 6) == 0) {
+	} else if (strncmp(sentence, NMEA_GPRMC, strlen(NMEA_GPRMC)) == 0) {
 		parse_rmc_sentence(sentence, &last_gps_data);
-	} else if (strncmp(sentence, NMEA_GNTXT, 6) == 0) {
+	} else if (strncmp(sentence, NMEA_GPTXT, strlen(NMEA_GPTXT)) == 0) {
 		parse_txt_sentence(sentence, &last_gps_data);
+	} else if (strncmp(sentence, NMEA_GPGSA, strlen(NMEA_GPTXT)) == 0) {
+		parse_gsa_sentence(sentence, &last_gps_data);
+	} else if (strncmp(sentence, NMEA_GPGSV, strlen(NMEA_GPTXT)) == 0) {
+		parse_gsv_sentence(sentence, &last_gps_data);
+	} else {
+		ESP_LOGW(TAG, "Unknown NMEA sentence: %s", sentence);
 	}
 }
 
 /* ---------------------------------------- */
 
-static void gps_task(void *arg) {
-	(void)arg;
-	uint8_t *data = malloc(GPS_BUF_SIZE);
+/**
+ * Read the latest GPS data. This function copies the most recently parsed GPS data from the last_gps_data structure
+ * into the provided gps_data_t structure. It first checks if the provided pointer is valid and then performs a
+ * memory copy to transfer the data. The function returns ESP_OK on success or an appropriate error code if the
+ * argument is invalid.
+ *
+ * @param data Pointer to a gps_data_t structure where the latest GPS data will be stored
+ * @return ESP_OK on success, or ESP_ERR_INVALID_ARG if the provided pointer is NULL
+ */
+esp_err_t gps_read(gps_data_t *data) {
+	if (data == NULL) {
+		return ESP_ERR_INVALID_ARG;
+	}
 
-	ESP_LOGD(TAG, "Starting GPS Task");
+	// Copy the latest GPS data to the provided structure
+	memcpy(data, &last_gps_data, sizeof(gps_data_t));
+	return ESP_OK;
+}
+
+/* ---------------------------------------- */
+
+/**
+ * Continuously read raw NMEA sentences from the GPS module over UART, validate and parse them, and update the latest
+ * GPS data structure. The task reads data in chunks from the UART buffer, processes it character by character to
+ * accumulate and identify complete NMEA sentences, and then calls the appropriate parsing functions based on the
+ * sentence type. The task includes error handling for UART read operations and logs any issues encountered during
+ * reading or parsing. It runs indefinitely, with a short delay between read attempts to allow for new data to arrive
+ * from the GPS module.
+ */
+static void gps_task(void *arg) {
+	(void)arg;							  /* Unused parameter */
+	uint8_t *data = malloc(GPS_BUF_SIZE); /* Buffer for raw UART data */
+
+	ESP_LOGI(TAG, "Starting GPS Task");
 	ESP_LOGD(TAG, "Config: UART=%d, TX=%d, RX=%d, baud=%d", GPS_UART_NUM, ROCKETLOG_GPS_TX_GPIO, ROCKETLOG_GPS_RX_GPIO,
 			 GPS_BAUD_RATE);
 
 	while (1) {
+		// Read raw data from UART with a timeout of 500ms. This will return the number of bytes read, or 0 if no data
 		int len = uart_read_bytes(gps_uart, data, GPS_BUF_SIZE, pdMS_TO_TICKS(500));
 
+		// If len is 0, it means no data was received within the timeout.
+		// If len is negative, it indicates an error. In either case,
+		// we log the issue and continue to the next iteration to try reading again.
 		if (len <= 0) {
 			if (len == 0) {
 				ESP_LOGE(TAG, "No data received.");
@@ -221,7 +371,8 @@ static void gps_task(void *arg) {
 			continue;
 		}
 
-		/* ESP_LOGD(TAG, "GPS Raw: %.*s", len, data); */
+		// Process the received data character by character to accumulate NMEA sentences.
+		// We look for the start of a sentence ('$'),
 		for (int i = 0; i < len; i++) {
 			char c = data[i];
 
@@ -241,15 +392,20 @@ static void gps_task(void *arg) {
 				nmea_buffer[nmea_index++] = c;
 			}
 		}
+
+		// The GPS module typically sends data at 1Hz, so we can delay for a short time before trying to read again.
+		vTaskDelay(pdMS_TO_TICKS(500));
 	}
 
-	// TODO: figure out why this is after while and what that does.
 	free(data);
 	vTaskDelete(NULL);
 }
 
 /* ---------------------------------------- */
 
+/**
+ * Initialize GPS module by configuring UART and starting GPS task.
+ */
 esp_err_t gps_init(void) {
 	if (gps_initialized) {
 		return ESP_OK;
@@ -257,6 +413,7 @@ esp_err_t gps_init(void) {
 
 	ESP_LOGI(TAG, "Initializing GPS");
 
+	// Set UART parameters for GPS
 	uart_config_t uart_cfg = {
 		.baud_rate = GPS_BAUD_RATE,
 		.data_bits = UART_DATA_8_BITS,
@@ -265,19 +422,19 @@ esp_err_t gps_init(void) {
 		.flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
 		.source_clk = UART_SCLK_DEFAULT,
 	};
-
-	ESP_LOGD(TAG, "Config: baud_rate=%d, data_bits=%d, parity=%d, stop_bits=%d, flow_ctrl=%d, source_clk=%d",
-			 uart_cfg.baud_rate, uart_cfg.data_bits, uart_cfg.flow_ctrl, uart_cfg.parity, uart_cfg.stop_bits,
+	ESP_LOGD(TAG, "UART Config: baud_rate=%d, data_bits=%d, parity=%d, stop_bits=%d, flow_ctrl=%d, source_clk=%d",
+			 uart_cfg.baud_rate, uart_cfg.data_bits, uart_cfg.parity, uart_cfg.stop_bits, uart_cfg.flow_ctrl,
 			 uart_cfg.source_clk);
 
-	ESP_LOGD(TAG, "Installing UART driver");
+	// Install UART driver for GPS
+	ESP_LOGD(TAG, "Installing UART driver for GPS on UART%d", gps_uart);
 	esp_err_t err = uart_driver_install(gps_uart, GPS_BUF_SIZE, 0, 0, NULL, 0);
 	if (err != ESP_OK) {
-		ESP_LOGE(TAG, "Failed to install UART driver: %s (0x%x)", esp_err_to_name(err), err);
+		ESP_LOGE(TAG, "Failed to install UART driver: %s", esp_err_to_name(err));
 		return err;
 	}
 
-	ESP_LOGD(TAG, "Setting UART parameters");
+	// Configure UART parameters
 	err = uart_param_config(gps_uart, &uart_cfg);
 	if (err != ESP_OK) {
 		ESP_LOGE(TAG, "Failed to set UART parameters: %s (0x%x)", esp_err_to_name(err), err);
@@ -290,6 +447,7 @@ esp_err_t gps_init(void) {
 		return err;
 	}
 
+	// Set UART pins for GPS (TX and RX)
 	ESP_LOGD(TAG, "Setting UART pins (TX=%d, RX=%d)", ROCKETLOG_GPS_TX_GPIO, ROCKETLOG_GPS_RX_GPIO);
 	err = uart_set_pin(gps_uart, ROCKETLOG_GPS_TX_GPIO, ROCKETLOG_GPS_RX_GPIO, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 	if (err != ESP_OK) {
@@ -303,23 +461,24 @@ esp_err_t gps_init(void) {
 		return err;
 	}
 
-	ESP_LOGD(TAG, "Creating GPS Task");
+	ESP_LOGI(TAG, "UART driver installed and configured successfully");
 
+	// Create the GPS task to continuously read from the UART and process NMEA sentences. The task is pinned to the
+	// same core as the main application to ensure it runs smoothly without contention. We also check if the task
+	// creation failed and handle it by logging the error and cleaning up the UART driver before returning.
+	ESP_LOGD(TAG, "Creating GPS task to read and parse NMEA sentences");
 	BaseType_t task_err = xTaskCreate(gps_task, "gps_task", GPS_TASK_STACK_SIZE, NULL, GPS_TASK_PRIORITY, NULL);
 	if (task_err != pdPASS) {
-		ESP_LOGE(TAG, "Failed to create GPS Task");
+		ESP_LOGE(TAG, "Failed to create GPS task: %d", task_err);
 
 		ESP_LOGD(TAG, "Deleting UART driver");
-		err = uart_driver_delete(gps_uart);
-		if (err != ESP_OK) {
-			ESP_LOGE(TAG, "Failed to delete UART driver: %s (0x%x)", esp_err_to_name(err), err);
+		esp_err_t delete_err = uart_driver_delete(gps_uart);
+		if (delete_err != ESP_OK) {
+			ESP_LOGE(TAG, "Failed to delete UART driver: %s (0x%x)", esp_err_to_name(delete_err), delete_err);
 		}
-		// TODO: find out why this shoudl be NO_MEM
-		return ESP_ERR_NO_MEM;
+		return ESP_FAIL;
 	}
 
 	gps_initialized = true;
-	ESP_LOGI(TAG, "GPS initialized successfully");
-
 	return ESP_OK;
 }
