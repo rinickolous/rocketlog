@@ -331,6 +331,16 @@ esp_err_t gps_read(gps_data_t *data) {
 		return ESP_ERR_INVALID_ARG;
 	}
 
+	ESP_LOGD(TAG, "Reading GPS data: lat=%.6f, lon=%.6f, alt=%.1f, sats=%d, fix=%d, hdop=%.1f", last_gps_data.latitude,
+			 last_gps_data.longitude, last_gps_data.altitude_m, last_gps_data.num_satellites, last_gps_data.fix_quality,
+			 last_gps_data.hdop);
+
+	if (last_gps_data.valid) {
+		ESP_LOGD(TAG, "GPS data is valid and has a fix");
+	} else {
+		ESP_LOGD(TAG, "GPS data is invalid or does not have a fix");
+	}
+
 	// Copy the latest GPS data to the provided structure
 	memcpy(data, &last_gps_data, sizeof(gps_data_t));
 	return ESP_OK;
