@@ -11,24 +11,31 @@ class VideoPanel(QtWidgets.QWidget):
         self._image: QtGui.QImage | None = None
         self._recording: bool = False
 
-        self.setMinimumSize(640, 480)
+        self.setMinimumSize(160, 120)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
         self.setAutoFillBackground(True)
 
     # ---------------------------------------- #
 
     def set_frame(self, img: QtGui.QImage) -> None:
+        """Push a new video frame and trigger a repaint."""
         self._image = img
         self.update()
 
     # ---------------------------------------- #
 
     def set_recording(self, value: bool) -> None:
+        """Update recording state (reserved for future REC overlay)."""
         self._recording = value
         self.update()
 
     # ---------------------------------------- #
 
     def paintEvent(self, e: QtGui.QPaintEvent) -> None:
+        """Draw the current frame scaled to fit, or a "NO VIDEO" placeholder."""
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
 
