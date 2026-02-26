@@ -1,634 +1,113 @@
-import json
-from dataclasses import asdict
+from PySide6 import QtWidgets, QtCore
 
-from datetime import datetime, timezone
-from pathlib import Path
-
-from PySide6 import QtCore, QtGui, QtWidgets
-
-from rocketlog.input.shortcuts import install_shortcuts, shortcut_hint
-from rocketlog.record.manifest import Manifest
-from rocketlog.record.recorder import SessionRecorder
-from rocketlog.telemetry.worker import TelemetryWorker
-from rocketlog.telemetry.protocol import ReceiverLog, format_log
-from rocketlog.telemetry.types import Telemetry
-from rocketlog.ui.hud import HudVideoWidget
-from rocketlog.util.time import format_timestamp
-from rocketlog.video.gst_pipeline import GstVideo
-from rocketlog.video.devices import list_camera_devices, CameraDevice
+from rocketlog.ui.video_panel import VideoPanel
 
 
 class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("RocketLog Recorder")
+    """
+    Main application window.
+    """
 
-        # Video Preview Panel
-        self.video_view = HudVideoWidget(self)
-        self.video_view.setMinimumSize(640, 480)
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("RocketLog")
 
-        self.camera_combo = QtWidgets.QComboBox()
-        self.camera_combo.setMinimumWidth(260)
-        self.camera_combo.addItem("Detecting cameras…")
-        self.camera_combo.setEnabled(False)
-
-        self._cameras: list[CameraDevice] = []
-        self._initialized = False
-
-        self.camera_combo.currentIndexChanged.connect(self.on_camera_changed)
-
-        self.camera_label = QtWidgets.QLabel()
-
-        self.video_box = QtWidgets.QGroupBox("")
-        self.video_box.setObjectName("Panel")
-        vg = QtWidgets.QVBoxLayout(self.video_box)
-        self.video_title = QtWidgets.QLabel("VIDEO")
-        self.video_title.setObjectName("PanelTitle")
-        vg.addWidget(self.video_title)
-        vg.addWidget(self.camera_label)
-        vg.addWidget(self.camera_combo)
-
-        self.telemetry_port_combo = QtWidgets.QComboBox()
-        self.telemetry_port_combo.setMinimumWidth(260)
-        self.telemetry_port_combo.addItem("Detecting telemetry devices…")
-        self.telemetry_port_combo.setEnabled(False)
-        self.telemetry_port_combo.currentIndexChanged.connect(
-            self.on_telemetry_port_changed
-        )
-
-        self.telemetry_box = QtWidgets.QGroupBox("")
-        self.telemetry_box.setObjectName("Panel")
-        tg = QtWidgets.QVBoxLayout(self.telemetry_box)
-        self.telemetry_title = QtWidgets.QLabel("TELEMETRY")
-        self.telemetry_title.setObjectName("PanelTitle")
-        tg.addWidget(self.telemetry_title)
-
-        self.receiver_logs_box = QtWidgets.QGroupBox("")
-        self.receiver_logs_box.setObjectName("Panel")
-        rlg = QtWidgets.QVBoxLayout(self.receiver_logs_box)
-        self.receiver_logs_title = QtWidgets.QLabel("RECEIVER LOGS")
-        self.receiver_logs_title.setObjectName("PanelTitle")
-        rlg.addWidget(self.receiver_logs_title)
-        self.receiver_logs = QtWidgets.QPlainTextEdit()
-        self.receiver_logs.setReadOnly(True)
-        self.receiver_logs.setMaximumBlockCount(500)
-        self.receiver_logs.setFont(
-            QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
-        )
-        rlg.addWidget(self.receiver_logs)
-        self.telemetry_source_label = QtWidgets.QLabel()
-        tg.addWidget(self.telemetry_source_label)
-        tg.addWidget(self.telemetry_port_combo)
-        self.t_time = QtWidgets.QLabel("Clock: --")
-        self.t_alt = QtWidgets.QLabel("Altitude: -- m")
-        self.t_vel = QtWidgets.QLabel("Velocity: -- m/s")
-        self.t_batt = QtWidgets.QLabel("Battery: -- V")
-        self.t_temp = QtWidgets.QLabel("Temperature: -- °C")
-        self.t_status = QtWidgets.QLabel("Status: IDLE")
-
-        t_layout = QtWidgets.QVBoxLayout()
-        for w in (
-            self.t_time,
-            self.t_alt,
-            self.t_vel,
-            self.t_batt,
-            self.t_temp,
-            self.t_status,
-        ):
-            w.setTextInteractionFlags(
-                QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
-            )
-            t_layout.addWidget(w)
-        tg.addLayout(t_layout)
-
-        self.btn_start = QtWidgets.QPushButton()
-        self.btn_stop = QtWidgets.QPushButton()
-        self.btn_stop.setEnabled(False)
-
-        btn_row = QtWidgets.QHBoxLayout()
-        btn_row.addWidget(self.btn_start)
-        btn_row.addWidget(self.btn_stop)
-
-        self.video_feed_box = QtWidgets.QGroupBox("")
-        self.video_feed_box.setObjectName("Panel")
-        vfb = QtWidgets.QVBoxLayout(self.video_feed_box)
-        self.video_feed_title = QtWidgets.QLabel("CAMERA FEED")
-        self.video_feed_title.setObjectName("PanelTitle")
-        self.video_feed_title.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Preferred,
-            QtWidgets.QSizePolicy.Policy.Fixed,
-        )
-        vfb.addWidget(self.video_feed_title)
-        vfb.setContentsMargins(4, 4, 4, 4)
-        vfb.setSpacing(4)
-        self.video_view.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding,
-            QtWidgets.QSizePolicy.Policy.Expanding,
-        )
-        vfb.addWidget(self.video_view)
-
-        left = QtWidgets.QVBoxLayout()
-        left.addWidget(self.video_feed_box)
-        left.addWidget(self.receiver_logs_box, stretch=1)
-        left.addLayout(btn_row)
-
-        right = QtWidgets.QVBoxLayout()
-        right.addWidget(self.video_box)
-        right.addWidget(self.telemetry_box)
-        right.addStretch(1)
-
-        self.ann_bar = QtWidgets.QFrame()
-        self.ann_bar.setObjectName("AnnBar")
-        ann_layout = QtWidgets.QHBoxLayout(self.ann_bar)
-        ann_layout.setContentsMargins(12, 8, 12, 8)
-        ann_layout.setSpacing(10)
-
-        # ---------------------------------------- #
-
-        def chip(text: str, object_name: str) -> QtWidgets.QLabel:
-            lbl = QtWidgets.QLabel(text)
-            lbl.setObjectName(object_name)
-            lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            lbl.setMinimumWidth(100)
-            return lbl
-
-        self.chip_mode = chip("IDLE", "ChipNeutral")
-        self.chip_link = chip("LINK DISCONNECTED", "ChipWarn")
-        self.chip_link.setMinimumWidth(160)
-        self.chip_gps = chip("GPS SIM", "ChipNeutral")
-        self.chip_storage = chip("STORAGE OK", "ChipGood")
-        self.chip_rec = chip("REC OFF", "ChipNeutral")
-
-        ann_layout.addWidget(self.chip_mode)
-        ann_layout.addStretch(1)
-        ann_layout.addWidget(self.chip_link)
-        ann_layout.addWidget(self.chip_gps)
-        ann_layout.addWidget(self.chip_storage)
-        ann_layout.addWidget(self.chip_rec)
+        self.init_main_panel()
+        self.init_status_panel()
 
         root = QtWidgets.QWidget()
-        outer = QtWidgets.QVBoxLayout(root)
-        outer.setContentsMargins(12, 12, 12, 12)
-        outer.setSpacing(10)
+        root_layout = QtWidgets.QVBoxLayout(root)
+        root_layout.setSpacing(10)
 
-        main_row = QtWidgets.QHBoxLayout()
-        main_row.addLayout(left, stretch=3)
-        main_row.addLayout(right, stretch=1)
-
-        outer.addWidget(self.ann_bar)
-        outer.addLayout(main_row)
+        root_layout.addWidget(self.status_panel)
+        root_layout.addWidget(self.main_panel)
 
         self.setCentralWidget(root)
 
-        # Recording folder
-        self.recordings_dir = Path.cwd() / "recordings"
-        self.recordings_dir.mkdir(parents=True, exist_ok=True)
+    # ---------------------------------------- #
 
-        # Recorder + video pipeline
-        self._recorder = SessionRecorder(out_dir=self.recordings_dir)
-        self._gst = GstVideo(camera_device=None, parent=self)
-        self._gst.frame_ready.connect(self.on_frame)
-        self._gst.error.connect(self.on_error)
-        self._gst.info.connect(self.on_info)
+    def init_main_panel(self):
+        """
+        Main Panel with Tabs for Rocket Telemetry and CanSat Telemetry
+        """
 
-        # Telemetry (async)
-        self._telemetry_thread = QtCore.QThread(self)
-        self._telemetry_worker = TelemetryWorker(parent=None)
-        self._telemetry_ports: list[tuple[str, str]] = []
-        self._telemetry_worker.moveToThread(self._telemetry_thread)
-        self._telemetry_thread.started.connect(self._telemetry_worker.start)
-        self._telemetry_worker.telemetry.connect(self.on_telemetry)
-        self._telemetry_worker.state.connect(self.on_telemetry_state)
-        self._telemetry_worker.error.connect(self.on_telemetry_error)
-        self._telemetry_worker.info.connect(self.on_telemetry_info)
-        self._telemetry_worker.receiver_log.connect(self.on_receiver_log)
-        self._telemetry_thread.start()
+        self.main_panel = QtWidgets.QGroupBox()
+        self.main_panel.setObjectName("main_panel")
 
-        self._telemetry: Telemetry | None = None
+        self.main_layout = QtWidgets.QGridLayout(self.main_panel)
 
-        # Telemetry timer (10 Hz) - ticks worker thread
-        self._telemetry_timer = QtCore.QTimer(self)
-        self._telemetry_timer.setInterval(100)
-        self._telemetry_timer.timeout.connect(self._telemetry_worker.tick)
-        self._telemetry_timer.start()
+        self.main_tabs = QtWidgets.QTabWidget()
+        self.main_tabs.setObjectName("main_tabs")
+        self.main_layout.addWidget(self.main_tabs)
 
-        # Auto-refresh telemetry device list
-        self._telemetry_ports_timer = QtCore.QTimer(self)
-        self._telemetry_ports_timer.setInterval(2000)
-        self._telemetry_ports_timer.timeout.connect(self._refresh_telemetry_ports)
-        self._telemetry_ports_timer.start()
-
-        # Buttons
-        self.btn_start.clicked.connect(self.start_recording)
-        self.btn_stop.clicked.connect(self.stop_recording)
-
-        self._apply_shortcut_labels()
-        install_shortcuts(self)
-
-        # Defer camera/telemetry device enumeration + preview start until the event loop
-        QtCore.QTimer.singleShot(0, self._finish_startup)
+        self.init_main_tab("Rocket")
+        self.init_main_tab("CanSat")
 
     # ---------------------------------------- #
 
-    def _apply_shortcut_labels(self) -> None:
-        cam_key = shortcut_hint("focus_camera")
-        src_key = shortcut_hint("focus_telemetry")
-        start_key = shortcut_hint("start_recording")
-        stop_key = shortcut_hint("stop_recording")
+    def init_main_tab(self, name: str):
+        # Telemetry Tab
+        tab = QtWidgets.QWidget()
+        tab_layout = QtWidgets.QGridLayout(tab)
+        video_panel = VideoPanel(self)
+        telemetry_preview_panel = QtWidgets.QTextEdit("Telemetry Preview Placeholder")
+        telemetry_graph_panel = QtWidgets.QTextEdit("Telemetry Graph Placeholder")
+        telemetry_log_panel = QtWidgets.QTextEdit("Telemetry Log Placeholder")
 
-        self.camera_label.setText(f"Camera ({cam_key})" if cam_key else "Camera")
-        self.telemetry_source_label.setText(
-            f"Source ({src_key})" if src_key else "Source"
-        )
-        self.btn_start.setText(
-            f"Start Recording ({start_key})" if start_key else "Start Recording"
-        )
-        self.btn_stop.setText(
-            f"Stop Recording ({stop_key})" if stop_key else "Stop Recording"
-        )
+        tab_layout.addWidget(video_panel, 0, 0)
+        tab_layout.addWidget(telemetry_preview_panel, 0, 1)
+        tab_layout.addWidget(telemetry_log_panel, 1, 0)
+        tab_layout.addWidget(telemetry_graph_panel, 1, 1)
 
-    # ---------------------------------------- #
+        tab_layout.setColumnStretch(0, 2)  # left side wider
+        tab_layout.setColumnStretch(1, 1)
+        tab_layout.setRowStretch(0, 2)
+        tab_layout.setRowStretch(1, 1)
 
-    def _refresh_telemetry_ports(self) -> None:
-        selected = str(self.telemetry_port_combo.currentData() or "")
-
-        self._telemetry_ports = TelemetryWorker.list_esp32_ports()
-
-        self.telemetry_port_combo.blockSignals(True)
-        try:
-            self.telemetry_port_combo.clear()
-            if not self._telemetry_ports:
-                self.telemetry_port_combo.addItem("No ESP32 devices found")
-                self.telemetry_port_combo.setEnabled(False)
-            else:
-                selected_idx = 0
-                for i, (device, desc) in enumerate(self._telemetry_ports):
-                    self.telemetry_port_combo.addItem(f"{device} — {desc}", device)
-                    if device == selected:
-                        selected_idx = i
-                self.telemetry_port_combo.setEnabled(True)
-                self.telemetry_port_combo.setCurrentIndex(selected_idx)
-        finally:
-            self.telemetry_port_combo.blockSignals(False)
+        self.main_tabs.addTab(tab, name)
 
     # ---------------------------------------- #
 
-    @QtCore.Slot(int)
-    def on_telemetry_port_changed(self, idx: int) -> None:
-        if idx < 0:
-            return
-        device = self.telemetry_port_combo.itemData(idx)
-        if not device:
-            return
+    def init_status_panel(self):
+        """
+        Status Widgets Panel (GPS Status, Cyberdeck Battery, etc.)
+        """
 
-        # Restart worker on the new port.
-        try:
-            self._telemetry_worker.stop()
-        except Exception:
-            pass
+        self.status_panel = QtWidgets.QFrame()
+        self.status_panel.setObjectName("status_panel")
 
-        # Update port, then reconnect.
-        self._telemetry_worker.set_port(str(device))
-        self.on_telemetry_state("reconnecting:0")
-        self._telemetry_worker.start()
+        self.chip_gps = self.create_status_chip("GPS", "NO FIX", "chip_gps")
+        self.chip_storage = self.create_status_chip("STORAGE", "OK", "chip_storage")
 
-    # ---------------------------------------- #
+        status_layout = QtWidgets.QHBoxLayout(self.status_panel)
+        status_layout.setContentsMargins(5, 5, 5, 5)
+        status_layout.setSpacing(10)
 
-    @QtCore.Slot()
-    def _finish_startup(self) -> None:
-        if self._initialized:
-            return
-        self._initialized = True
-
-        # Telemetry ports + camera enumeration might touch the system; do it after first paint.
-        self._refresh_telemetry_ports()
-
-        try:
-            self._cameras = list_camera_devices()
-        except Exception as e:
-            self._cameras = []
-            self.on_info(f"Camera discovery failed: {e}")
-
-        self.camera_combo.blockSignals(True)
-        try:
-            self.camera_combo.clear()
-            if not self._cameras:
-                self.camera_combo.addItem("No cameras found")
-                self.camera_combo.setEnabled(False)
-            else:
-                for cam in self._cameras:
-                    self.camera_combo.addItem(cam.label, cam.id)
-                self.camera_combo.setEnabled(True)
-        finally:
-            self.camera_combo.blockSignals(False)
-
-        # Start preview with whatever camera is selected.
-        device = self.camera_combo.currentData()
-        if device:
-            self._gst.set_source(str(device))
-        self._gst.start_preview()
+        status_layout.addWidget(self.chip_gps)
+        status_layout.addWidget(self.chip_storage)
 
     # ---------------------------------------- #
 
-    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
-        try:
-            if self._recorder.is_recording:
-                # finalize recording and package
-                self._gst.stop_recording_gracefully()
-                archive_path = self._recorder.stop_and_package()
-                self.on_info(f"Recording saved to: {archive_path}")
-        except Exception:
-            pass
-        finally:
-            self._gst.stop_recording()
-
-        try:
-            self._telemetry_timer.stop()
-        except Exception:
-            pass
-
-        try:
-            self._telemetry_ports_timer.stop()
-        except Exception:
-            pass
-
-        try:
-            if self._telemetry_thread.isRunning():
-                self._telemetry_worker.stop()
-                self._telemetry_thread.quit()
-                self._telemetry_thread.wait(1500)
-        except Exception:
-            pass
-
-        super().closeEvent(event)
-
-    # ---------------------------------------- #
-
-    @QtCore.Slot(int)
-    def on_camera_changed(self, idx: int) -> None:
-        if idx < 0:
-            return
-        device_id = self.camera_combo.itemData(idx)
-        if not device_id:
-            return
-        self._gst.set_source(str(device_id))
-
-    # ---------------------------------------- #
-
-    @QtCore.Slot(QtGui.QImage)
-    def on_frame(self, img: QtGui.QImage) -> None:
-        self.video_view.set_frame(img)
-
-    # ---------------------------------------- #
-
-    @QtCore.Slot()
-    def on_error(self, msg: str) -> None:
-        QtWidgets.QMessageBox.critical(self, "Error", msg)
-
-    # ---------------------------------------- #
-
-    @QtCore.Slot()
-    def on_info(self, msg: str) -> None:
-        print(msg)
-
-    # ---------------------------------------- #
-
-    def _set_link_chip(self, text: str, object_name: str) -> None:
-        self.chip_link.setText(text)
-        self.chip_link.setObjectName(object_name)
-        self.chip_link.style().unpolish(self.chip_link)
-        self.chip_link.style().polish(self.chip_link)
-        self.chip_link.update()
-
-    # ---------------------------------------- #
-
-    @QtCore.Slot(str)
-    def on_telemetry_state(self, state: str) -> None:
-        if state == "connected":
-            self._set_link_chip("LINK OK", "ChipGood")
-            return
-
-        if state == "disconnected":
-            self._set_telemetry_disconnected_ui()
-            return
-
-        # Expected reconnecting formats:
-        # - "reconnecting" (legacy)
-        # - "reconnecting:N" (attempt counter)
-        if state.startswith("reconnecting"):
-            parts = state.split(":", 1)
-            if len(parts) == 2 and parts[1].isdigit():
-                self._set_link_chip(f"LINK RECONNECTING ({parts[1]})", "ChipCaution")
-            else:
-                self._set_link_chip("LINK RECONNECTING", "ChipCaution")
-            return
-
-        self._set_link_chip(f"LINK {state.upper()}", "ChipNeutral")
-
-    # ---------------------------------------- #
-
-    @QtCore.Slot(str)
-    def on_telemetry_info(self, msg: str) -> None:
-        self.on_telemetry_state("connected")
-        self.on_info(msg)
-
-    # ---------------------------------------- #
-
-    def _set_telemetry_disconnected_ui(self) -> None:
-        self._set_link_chip("LINK DISCONNECTED", "ChipWarn")
-
-        self.t_time.setText("Clock: --")
-        self.t_alt.setText("Altitude: -- m")
-        self.t_vel.setText("Velocity: -- m/s")
-        self.t_batt.setText("Battery: -- V")
-        self.t_temp.setText("Temperature: -- °C")
-
-    # ---------------------------------------- #
-
-    @QtCore.Slot(str)
-    def on_telemetry_error(self, msg: str) -> None:
-        self._set_telemetry_disconnected_ui()
-        self.on_info(msg)
-
-    # ---------------------------------------- #
-
-    @QtCore.Slot(object)
-    def on_receiver_log(self, log: ReceiverLog) -> None:
-        recv_ts = "--"
-        if log.t_unix_receiver is not None:
-            recv_ts = format_timestamp(log.t_unix_receiver)
-        host_ts = format_timestamp(log.t_unix_host)
-
-        # Use a single-character indicator rather than textual level names.
-        # (Keeps the UI compact; avoids duplicating "ERROR" etc. in display.)
-        level_symbol = {
-            0: "D",  # DEBUG
-            1: "I",  # INFO
-            2: "W",  # WARN
-            3: "E",  # ERROR
-        }.get(log.level, "?")
-
-        line = f"[{level_symbol}] {recv_ts} (host {host_ts}) {log.msg}"
-
-        # Color-code by log level.
-        cursor = self.receiver_logs.textCursor()
-        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
-
-        fmt = QtGui.QTextCharFormat()
-        if log.level == 0:  # DEBUG
-            fmt.setForeground(QtGui.QColor("#9CA3AF"))
-        elif log.level == 1:  # INFO
-            fmt.setForeground(QtGui.QColor("#E5E7EB"))
-        elif log.level == 2:  # WARN
-            fmt.setForeground(QtGui.QColor("#F59E0B"))
-        elif log.level == 3:  # ERROR
-            fmt.setForeground(QtGui.QColor("#EF4444"))
-
-        cursor.insertText(line + "\n", fmt)
-        self.receiver_logs.setTextCursor(cursor)
-        self.receiver_logs.ensureCursorVisible()
-
-        if self._recorder.is_recording:
-            try:
-                self._recorder.write_receiver_log(log)
-            except Exception:
-                pass
-
-    # ---------------------------------------- #
-
-    def start_recording(self) -> None:
-        if self._recorder.is_recording:
-            return
-
-        # Start session first so we have a file path for the pipeline
-        # TODO: implement
-        try:
-            # We'll fill pipeline string after we build it; for v0 keep it in manifest as what we ran.
-            # Start recorder with placeholder then overwrite manifest if you want; easiest is just pass later.
-            # Here we start AFTER pipeline start so we can pass the exact pipeline string.
-            pass
-        except Exception as e:
-            self.on_error(str(e))
-            return
-
-        # Prepare session dir & paths by calling recorder.start after we know the pipeline string
-        # We need the mp4 path before building the record pipeline, so we generate a session dir first.
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        session_dir = self.recordings_dir / f"session_{ts}"
-        session_dir.mkdir(parents=True, exist_ok=True)
-        video_path = session_dir / "video.mp4"
-
-        # Start recording pipeline (this stops preview pipeline and replaces it)
-        self._gst.start_recording(mp4_path=video_path)
-
-        # Now start recorder and point it at this session dir
-        # We are reusing the recorder but forcing its session_dir to match
-        self._recorder.session_dir = session_dir
-        self._recorder.video_path = video_path
-        self._recorder.telemetry_path = session_dir / "telemetry.jsonl"
-        self._recorder.manifest_path = session_dir / "manifest.json"
-        self._recorder._manifest = Manifest(
-            created_utc=ts, pipeline=self._gst.current_pipeline_str
-        )
-        self._recorder._telemetry_fp = open(
-            self._recorder.telemetry_path, "w", encoding="utf-8"
-        )
-        self._recorder._is_recording = True
-        with open(self._recorder.manifest_path, "w", encoding="utf-8") as f:
-            json.dump(asdict(self._recorder._manifest), f, indent=2)
-
-        self.t_status.setText("Status: RECORDING")
-        self.btn_start.setEnabled(False)
-        self.btn_stop.setEnabled(True)
-
-    # ---------------------------------------- #
-
-    def stop_recording(self) -> None:
-        if not self._recorder.is_recording:
-            return
-
-        # Finalize MP4 properly (EOS), then package
-        self._gst.stop_recording_gracefully()
-        try:
-            archive_path = self._recorder.stop_and_package()
-        except Exception as e:
-            self.on_error(f"Failed to finalize recording: {e}")
-            return
-
-        # Restart preview
-        self._gst.start_preview()
-
-        self.t_status.setText("Status: IDLE")
-        self.btn_start.setEnabled(True)
-        self.btn_stop.setEnabled(False)
-        QtWidgets.QMessageBox.information(
-            self, "Saved", f"Recording saved to:\n{archive_path}"
-        )
-
-    # ---------------------------------------- #
-
-    def on_telemetry_tick(self) -> None:
-        # Kept for compatibility; telemetry now arrives via worker thread.
-        return
-
-    # ---------------------------------------- #
-
-    @QtCore.Slot(object)
-    def on_telemetry(self, t: Telemetry) -> None:
-        self._telemetry = t
-
-        # In case we got data without an explicit connect message
-        if self.chip_link.text() != "LINK OK":
-            self.on_telemetry_state("connected")
-
-        self.t_time.setText(f"Clock: {format_timestamp(t['t_unix'])}")
-        self.t_alt.setText(f"Altitude: {t['alt_m']} m")
-        self.t_vel.setText(f"Velocity: {t['vel_mps']} m/s")
-        self.t_batt.setText(f"Battery: {t['batt_v']} V")
-        self.t_temp.setText(f"Temperature: {t['temp_c']} °C")
-
-        # Telemetry is shown in the right-side panel; no video overlay.
-
-        if self._recorder.is_recording:
-            self._recorder.write_telemetry(t)
-
-    # ---------------------------------------- #
-
-    def toggle_recording(self) -> None:
-        if self._recorder.is_recording:
-            self.stop_recording()
-        else:
-            self.start_recording()
-
-    # ---------------------------------------- #
-
-    def focus_camera(self) -> None:
-        self.camera_combo.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
-
-    # ---------------------------------------- #
-
-    def focus_telemetry(self) -> None:
-        self.telemetry_port_combo.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
-
-    # ---------------------------------------- #
-
-    def toggle_fullscreen(self) -> None:
-        if self.isFullScreen():
-            self.showNormal()
-        else:
-            self.showFullScreen()
-
-    # ---------------------------------------- #
-
-    def _set_rec_ui(self, on: bool) -> None:
-        self.video_view.set_recording(on)
-        self.chip_rec.setText("REC ON" if on else "REC OFF")
-        self.chip_rec.setObjectName("ChipWarn" if on else "ChipNeutral")
-        self.chip_mode.setText("RECORD" if on else "IDLE")
-        self.chip_mode.setObjectName("ChipCaution" if on else "ChipNeutral")
-
-        # reapply QSS when objectName changes
-        for w in (self.chip_rec, self.chip_mode):
-            w.style().unpolish(w)
-            w.style().polish(w)
-            w.update()
+    def create_status_chip(
+        self, title_value: str, initial_value: str, object_name: str
+    ) -> QtWidgets.QFrame:
+        """
+        Creates a status chip with a title and a value. Used for GPS status, storage status, etc.
+        """
+
+        container = QtWidgets.QFrame()
+        container.setObjectName(f"{object_name}_container")
+
+        container_layout = QtWidgets.QVBoxLayout(container)
+        title = QtWidgets.QLabel(title_value)
+        title.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+
+        label = QtWidgets.QLabel(initial_value)
+        label.setObjectName(object_name)
+        label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        label.setMinimumWidth(100)
+
+        container_layout.addWidget(title)
+        container_layout.addWidget(label)
+
+        return container
