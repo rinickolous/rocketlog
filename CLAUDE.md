@@ -12,8 +12,7 @@ The ground station runs on a cyberdeck built around a Raspberry Pi 3 (Debian/PiO
 
 ```
 rocketlog/
-├── src/rocketlog/          # Active Python app (WIP rewrite — owner's code)
-├── src/rocketlog.old/      # Reference implementation (GPT-generated, being replaced)
+├── src/rocketlog/          # Active Python app
 ├── firmware/
 │   ├── receiver/           # ESP-IDF project: USB serial relay (simulated telemetry for now)
 │   ├── transmitter/        # ESP-IDF project: real sensor readout (not yet protocol-wired)
@@ -33,8 +32,7 @@ rocketlog/
 ## Code Ownership
 
 - **C firmware**: ~90% owner-written. Treat as authoritative — don't refactor without prompting.
-- **Python `src/rocketlog/`**: owner-written rewrite. Actively being developed.
-- **Python `src/rocketlog.old/`**: read-only reference (GPT-generated). Use it to understand existing behaviour, not as a style guide.
+- **Python `src/rocketlog/`**: owner-written. Actively being developed.
 
 ---
 
@@ -131,10 +129,6 @@ All modules listed below are complete unless stated otherwise.
 | `telemetry/__init__.py` | Empty placeholder. |
 | `record/session.py` | `SessionRecorder`: multi-source JSONL + CSV recording + ZIP packaging to `.rocketlog`. |
 | `record/manifest.py` | `Manifest` dataclass. |
-| `util/graph.py` | Empty placeholder. |
-
-`rocketlog.old` has working reference implementations of: telemetry protocol, serial reader, QThread worker, session recorder (JSONL + ZIP), GStreamer video pipeline, keyboard shortcuts.
-
 ---
 
 ## Next Steps (in order)
@@ -143,7 +137,7 @@ All modules listed below are complete unless stated otherwise.
 
 2. **Playback backend** — replay `.rocketlog` archives.
 
-3. **Keyboard shortcuts** (see `.old` for reference).
+3. **Keyboard shortcuts**.
 
 4. **`util/graph.py`** — altitude/velocity graph widget.
 
