@@ -30,6 +30,9 @@ clangd-use-receiver:
 clangd-use-transmitter:
     bash -lc 'source /opt/esp-idf/export.sh >/dev/null 2>&1 || true; ln -sf firmware/transmitter/build/compile_commands.json compile_commands.json'
 
+clangd-use-sim:
+    bash -lc 'source /opt/esp-idf/export.sh >/dev/null 2>&1 || true; ln -sf firmware/sim/build/compile_commands.json compile_commands.json'
+
 # ---------------------------------------- #
 #  App                                     #
 # ---------------------------------------- #
@@ -107,3 +110,27 @@ transmitter-monitor: idf-check
             monitor'
 
 transmitter-burn: transmitter-build transmitter-flash
+
+# ---------------------------------------- #
+#  Sim (ESP-IDF)                           #
+# ---------------------------------------- #
+
+sim-build: idf-check
+    bash -lc 'source /opt/esp-idf/export.sh >/dev/null 2>&1 && idf.py -C firmware/sim build'
+    just clangd-use-sim
+
+sim-flash: idf-check
+    bash -lc 'source /opt/esp-idf/export.sh >/dev/null 2>&1 && \
+        idf.py -C firmware/sim \
+            -p "{{ `python firmware/flash_config.py sim port --config firmware/flash.toml` }}" \
+            -b "{{ `python firmware/flash_config.py sim baud --config firmware/flash.toml` }}" \
+            flash'
+
+sim-monitor: idf-check
+    bash -lc 'source /opt/esp-idf/export.sh >/dev/null 2>&1 && \
+        idf.py -C firmware/sim \
+            -p "{{ `python firmware/flash_config.py sim port --config firmware/flash.toml` }}" \
+            -b "{{ `python firmware/flash_config.py sim baud --config firmware/flash.toml` }}" \
+            monitor'
+
+sim-burn: sim-build sim-flash

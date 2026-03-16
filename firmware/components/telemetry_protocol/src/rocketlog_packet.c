@@ -136,3 +136,14 @@ int rocketlog_ack_packet_encode_v1(uint8_t *out, size_t out_len, uint8_t ack_typ
 	memcpy(&payload[1 + 4 + 1], &applied_unix_time_us, sizeof(applied_unix_time_us));
 	return rocketlog_packet_encode_v1(out, out_len, ROCKETLOG_MSG_ACK, payload, sizeof(payload));
 }
+
+int rocketlog_event_packet_encode_v1(uint8_t *out, size_t out_len, uint8_t code, int32_t param) {
+	if (out == NULL) {
+		return -1;
+	}
+	// payload: [code:u8][param:i32 little-endian] = 5 bytes
+	uint8_t payload[1 + 4];
+	payload[0] = code;
+	memcpy(&payload[1], &param, sizeof(param));
+	return rocketlog_packet_encode_v1(out, out_len, ROCKETLOG_MSG_EVENT, payload, sizeof(payload));
+}

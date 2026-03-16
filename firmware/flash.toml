@@ -9,3 +9,7 @@ baud = 115200
 [transmitter]
 port = "/dev/ttyACM0"
 baud = 115200
+
+[sim]
+port = "/dev/ttyACM0"
+baud = 115200

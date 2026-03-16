@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from typing import cast
 
 import serial
 
 from rocketlog.telemetry import protocol
 from rocketlog.telemetry.events import (
     AckEvent,
+    ReceiverEventEvent,
     ReceiverLogEvent,
     TelemetryEvent,
     TelemetryStreamEvent,
@@ -138,7 +140,7 @@ class TelemetryReader:
             match msg_type:
                 case protocol.MSG_TELEMETRY:
                     try:
-                        t_unix, alt_m, vel_mps, batt_v, temp_c = (
+                        t_unix, alt_m, vel_mps, batt_v, temp_c, lat, lon, gps_alt_m, gps_sats, gps_fix = (
                             protocol.decode_telemetry_payload(payload)
                         )
                     except Exception:
@@ -152,11 +154,11 @@ class TelemetryReader:
                                 batt_v=batt_v,
                                 temp_c=temp_c,
                                 pressure_pa=0.0,
-                                lat=0.0,
-                                lon=0.0,
-                                gps_alt_m=0.0,
-                                gps_sats=0,
-                                gps_fix=False,
+                                lat=lat if lat is not None else 0.0,
+                                lon=lon if lon is not None else 0.0,
+                                gps_alt_m=gps_alt_m if gps_alt_m is not None else 0.0,
+                                gps_sats=gps_sats if gps_sats is not None else 0,
+                                gps_fix=gps_fix if gps_fix is not None else False,
                             )
                         )
                     )
@@ -191,22 +193,53 @@ class TelemetryReader:
                         )
                     )
 
+                case protocol.MSG_EVENT:
+                    try:
+                        code, param = protocol.decode_event_payload(payload)
+                    except Exception:
+                        continue
+                    self._pending.append(ReceiverEventEvent(code=code, param=param))
+
                 # Unknown message types are silently ignored.
 
     # ---------------------------------------- #
 
-    def sample(self) -> Telemetry:
-        """Block until the next telemetry packet arrives (skips log/ack events)."""
-        while True:
-            evt = self.read_event(timeout_s=1.0)
+    def sample(self, timeout_s: float = 1.0) -> Telemetry | None:
+        """
+        Return the next telemetry packet, or None if timeout_s elapses.
+
+        Skips log and ack events without discarding them.
+        """
+        end = time.time() + timeout_s
+        while time.time() < end:
+            remaining = end - time.time()
+            evt = self.read_event(timeout_s=min(0.1, remaining))
             if isinstance(evt, TelemetryEvent):
                 return evt.telemetry
+        return None
 
     # ---------------------------------------- #
 
     def receiver_log(self) -> ReceiverLog | None:
-        """Return the next buffered log message without blocking, or None."""
-        evt = self.read_event(timeout_s=0.0)
-        if isinstance(evt, ReceiverLogEvent):
+        """Return the next buffered log message without blocking, or None.
+
+        Only consumes events from the front of the queue if they are log
+        messages; leaves other event types in place.
+        """
+        if self._pending and isinstance(self._pending[0], ReceiverLogEvent):
+            evt = cast(ReceiverLogEvent, self._pending.popleft())
             return evt.log
+        return None
+
+    # ---------------------------------------- #
+
+    def receiver_event(self) -> tuple[int, int] | None:
+        """Return the next buffered event packet as (code, param), or None.
+
+        Only consumes events from the front of the queue if they are
+        ReceiverEventEvent; leaves other event types in place.
+        """
+        if self._pending and isinstance(self._pending[0], ReceiverEventEvent):
+            evt = cast(ReceiverEventEvent, self._pending.popleft())
+            return evt.code, evt.param
         return None

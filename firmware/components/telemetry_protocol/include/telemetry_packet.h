@@ -36,6 +36,7 @@ typedef enum {
 	ROCKETLOG_MSG_LOG = 2,
 	ROCKETLOG_MSG_TIME_SYNC = 3,
 	ROCKETLOG_MSG_ACK = 4,
+	ROCKETLOG_MSG_EVENT = 5,
 } rocketlog_msg_type_t;
 
 typedef enum {
@@ -51,6 +52,23 @@ typedef enum {
 int rocketlog_telemetry_packet_encode_v1(uint8_t *out, size_t out_len, const telemetry_sample_t *sample);
 
 int rocketlog_telemetry_packet_decode_v1(telemetry_sample_t *out, const uint8_t *packet, size_t packet_len);
+
+// v2 telemetry packet — extends v1 with GPS fields.
+//
+// Additional payload fields (after temperature_cC):
+//   latitude_1e7   : int32  (decimal degrees × 1e7)
+//   longitude_1e7  : int32  (decimal degrees × 1e7)
+//   gps_alt_cm     : int32
+//   gps_sats       : uint8
+//   gps_fix        : uint8  (0 = no fix, 1 = fix)
+//
+// payload_len = 34 bytes. Total packet = 43 bytes.
+#define ROCKETLOG_TELEMETRY_PACKET_V2_PAYLOAD_LEN 34
+#define ROCKETLOG_TELEMETRY_PACKET_V2_LEN 43
+
+int rocketlog_telemetry_packet_encode_v2(uint8_t *out, size_t out_len, const telemetry_sample_t *sample);
+
+int rocketlog_telemetry_packet_decode_v2(telemetry_sample_t *out, const uint8_t *packet, size_t packet_len);
 
 // Variable-length packet helpers (CRC32-protected, little-endian, packed)
 
@@ -70,6 +88,10 @@ int rocketlog_packet_decode_v1(uint8_t *msg_type_out, const uint8_t **payload_ou
 // LOG payload: [level:u8][unix_time_us:i64][msg_utf8...]
 int rocketlog_log_packet_encode_v1(uint8_t *out, size_t out_len, rocketlog_log_level_t level, int64_t unix_time_us,
 								   const char *msg_utf8);
+
+// EVENT payload: [code:u8][param:i32]  (5 bytes, little-endian)
+// Use the event codes defined in event_codes.h.
+int rocketlog_event_packet_encode_v1(uint8_t *out, size_t out_len, uint8_t code, int32_t param);
 
 // TIME_SYNC payload: [unix_time_us:i64][seq:u32]
 int rocketlog_time_sync_packet_encode_v1(uint8_t *out, size_t out_len, int64_t unix_time_us, uint32_t seq);

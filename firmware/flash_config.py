@@ -41,7 +41,7 @@ def load_config(path: Path, project: str) -> FlashConfig:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Read firmware/flash.toml")
-    parser.add_argument("project", choices=["receiver", "transmitter"])
+    parser.add_argument("project", choices=["receiver", "transmitter", "sim"])
     parser.add_argument("key", choices=["port", "baud"])
     parser.add_argument(
         "--config",

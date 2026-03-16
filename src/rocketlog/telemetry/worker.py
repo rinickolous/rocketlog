@@ -5,7 +5,7 @@ import time
 
 from PySide6 import QtCore
 
-from rocketlog.telemetry.protocol import ReceiverLog, format_log
+from rocketlog.telemetry.protocol import ReceiverLog, format_log, format_event
 from rocketlog.telemetry.reader import TelemetryReader
 from rocketlog.telemetry.types import Telemetry
 from rocketlog.ui.settings_tab import read_int, read_str
@@ -117,6 +117,7 @@ class TelemetryWorker(QtCore.QObject):
         self._running = True
         self._connect_attempts = 0
         self._next_connect_time = 0.0
+        self._timer.start()
         self._maybe_connect()
 
     # ---------------------------------------- #
@@ -125,6 +126,7 @@ class TelemetryWorker(QtCore.QObject):
     def stop(self) -> None:
         """Stop polling and close the serial port."""
         self._running = False
+        self._timer.stop()
         self._close_reader()
         self.state.emit("disconnected")
 
@@ -158,8 +160,9 @@ class TelemetryWorker(QtCore.QObject):
 
         try:
             self._drain_logs()
-            t: Telemetry = self._reader.sample()
-            self.telemetry.emit(t)
+            t = self._reader.sample(timeout_s=0.1)
+            if t is not None:
+                self.telemetry.emit(t)
             self._drain_logs()
         except Exception as exc:
             self._on_read_error(str(exc))
@@ -167,7 +170,7 @@ class TelemetryWorker(QtCore.QObject):
     # ---------------------------------------- #
 
     def _drain_logs(self) -> None:
-        """Emit all pending receiver log messages."""
+        """Emit all pending receiver log messages and event packets."""
         if self._reader is None:
             return
         while True:
@@ -175,6 +178,19 @@ class TelemetryWorker(QtCore.QObject):
             if log is None:
                 break
             self.receiver_log.emit(log)
+        while True:
+            evt = self._reader.receiver_event()
+            if evt is None:
+                break
+            code, param = evt
+            # Synthesise a ReceiverLog so the existing UI pipeline handles it.
+            synthetic = ReceiverLog(
+                t_unix_receiver=None,
+                t_unix_host=time.time(),
+                level=0,  # DEBUG level — events are informational
+                msg=format_event(code, param),
+            )
+            self.receiver_log.emit(synthetic)
 
     # ---------------------------------------- #
 

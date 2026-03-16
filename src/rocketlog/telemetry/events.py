@@ -43,4 +43,15 @@ class AckEvent:
 
 # ---------------------------------------- #
 
-TelemetryStreamEvent = TelemetryEvent | ReceiverLogEvent | AckEvent
+
+@dataclass(frozen=True)
+class ReceiverEventEvent:
+    """A compact event code packet from the firmware (LoRa-optimised)."""
+
+    code: int
+    param: int
+
+
+# ---------------------------------------- #
+
+TelemetryStreamEvent = TelemetryEvent | ReceiverLogEvent | AckEvent | ReceiverEventEvent

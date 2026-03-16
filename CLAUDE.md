@@ -17,11 +17,12 @@ rocketlog/
 ├── firmware/
 │   ├── receiver/           # ESP-IDF project: USB serial relay (simulated telemetry for now)
 │   ├── transmitter/        # ESP-IDF project: real sensor readout (not yet protocol-wired)
+│   ├── sim/                # ESP-IDF project: realistic flight sim over USB (v2 telemetry)
 │   ├── components/
 │   │   ├── common/         # Board pin defs, monotonic time API
 │   │   ├── sensors/        # GPS (NMEA/UART) + MPL3115A2 barometer (I2C) drivers
 │   │   └── telemetry_protocol/  # Binary packet protocol (COBS framing, CRC32)
-│   └── flash.toml          # Serial port config (receiver=/dev/ttyACM1, transmitter=/dev/ttyACM0)
+│   └── flash.toml          # Serial port config (receiver=/dev/ttyACM1, transmitter=/dev/ttyACM0, sim=/dev/ttyACM0)
 ├── justfile                # All build/flash/run commands
 ├── pyproject.toml
 └── compile_commands.json   # Symlink → active firmware build (for clangd)
@@ -64,7 +65,7 @@ payload       : [payload_len bytes]
 crc32         : u32 (little-endian, covers all prior bytes)
 ```
 
-**Telemetry payload** (29 bytes total packet, `<qiiHh` struct):
+**Telemetry payload v1** (29 bytes total packet, `<qiiHh` struct, 20-byte payload):
 ```
 unix_time_us   : i64  (UTC microseconds)
 altitude_cm    : i32
@@ -72,6 +73,22 @@ velocity_cms   : i32
 battery_mv     : u16
 temperature_cC : i16  (centi-°C)
 ```
+
+**Telemetry payload v2** (43 bytes total packet, `<qiiHhiiiHH` struct, 34-byte payload):
+```
+unix_time_us   : i64  (UTC microseconds)
+altitude_cm    : i32
+velocity_cms   : i32
+battery_mv     : u16
+temperature_cC : i16  (centi-°C)
+latitude_1e7   : i32  (decimal degrees × 1e7)
+longitude_1e7  : i32  (decimal degrees × 1e7)
+gps_alt_cm     : i32
+gps_sats       : u8
+gps_fix        : u8   (0 = no fix, 1 = fix)
+```
+
+Python detects v1 vs v2 by `payload_len` (20 vs 34). v1 returns `None` for all GPS fields.
 
 **Time sync flow**: Python sends `TIME_SYNC` → firmware applies offset and replies `ACK` → firmware emits timestamped telemetry.
 
@@ -83,8 +100,9 @@ CRC32 uses standard polynomial — `esp_crc32_le()` in C, `zlib.crc32()` in Pyth
 
 | Project | Status |
 |---------|--------|
-| `receiver` | Simulates fake ascent/descent curve, sends binary-framed telemetry over USB JTAG serial at 10 Hz. Handles TIME_SYNC. LoRa RX is stubbed. |
+| `receiver` | Simulates fake ascent/descent curve, sends binary-framed v1 telemetry over USB JTAG serial at 10 Hz. Handles TIME_SYNC. LoRa RX is stubbed. |
 | `transmitter` | Reads real MPL3115A2 + GPS sensors. Logs via `ESP_LOG` only — not yet sending binary protocol frames. |
+| `sim` | Realistic multi-phase flight simulation (pad hold → boost → coast → apogee → drogue → main → landing). Sends v2 telemetry (with GPS) over USB at 10 Hz. Handles TIME_SYNC. |
 
 Known issue: `sensor_gps.c:309-311` uses `strlen(NMEA_GPTXT)` for GSA/GSV comparisons instead of their own prefix lengths.
 
@@ -104,7 +122,7 @@ All modules listed below are complete unless stated otherwise.
 | `ui/log_panel.py` | `QPlainTextEdit`-backed scrolling log. `append_line(line, level)` with colour coding. `append_log(level, msg, timestamp)`. Capped at 500 lines. |
 | `ui/tab_bar.py` | `LiveTabBar`: per-tab strip with LINK chip, REC chip, Start/Stop Recording buttons. Signals: `start_recording`, `stop_recording`. `set_link_state_labelled(prefix, state)`, `set_recording(bool)`. `PlaybackTabBar`: Open button, path label, Rocket/CanSat radio buttons, speed combo, transport buttons, scrubber slider, timestamp label. |
 | `ui/settings_tab.py` | Settings tab backed by `QSettings` (org=`rocketlog`, app=`rocketlog`). Sections: Serial/Connection (port combo + Refresh, baud, reconnect interval), Recording (output dir + Browse), Display (trail length, altitude scale). `read_str(key)` / `read_int(key)` / `write(key, val)` module-level helpers used by other modules. Emits `settings_changed` on Apply/Reset. |
-| `ui/sim_panel.py` | **Next to rewrite.** Currently uses sphere-based projection — produces a bad viewing angle. Replace with a flat infinite-plane perspective grid (see "Next Steps" below). |
+| `ui/sim_panel.py` | Flat infinite-plane perspective grid. Camera above ground plane, forward-looking with pin-hole projection. Sky gradient, GPS trail, altitude stem + dot, "NO SIM DATA" label. |
 | `telemetry/types.py` | `Telemetry` TypedDict: `t_unix`, `alt_m`, `vel_mps`, `batt_v`, `temp_c`, `pressure_pa`, `lat`, `lon`, `gps_alt_m`, `gps_sats`, `gps_fix`. |
 | `telemetry/protocol.py` | COBS framing, CRC32, packet encode/decode, all payload helpers. `ReceiverLog` dataclass. Matches firmware binary layout exactly. |
 | `telemetry/events.py` | `TelemetryEvent`, `ReceiverLogEvent`, `AckEvent` frozen dataclasses. `TelemetryStreamEvent` union type. |
@@ -121,20 +139,13 @@ All modules listed below are complete unless stated otherwise.
 
 ## Next Steps (in order)
 
-1. **Rewrite `ui/sim_panel.py`** — replace sphere projection with a flat infinite-plane perspective grid:
-   - Camera at a fixed height above a flat ground plane, looking forward and slightly down.
-   - Grid lines: evenly-spaced rails in Z (depth) and cross-lines in X (lateral), projected with pin-hole: `sx = f * x / z + cx`, `sy = f * y / z + cy`.
-   - Keep: sky gradient background, trail, nadir crosshair, altitude stem + dot, "NO SIM DATA" label, colour constants.
-   - Remove: all `_sphere_to_world`, `_project`, `_R`, `_CAM_H`, `_GRID_SPAN`, `_LAT_LINES`, `_LON_LINES`.
-   - Add: `_CAM_HEIGHT`, `_GRID_DEPTH`, `_GRID_WIDTH`, `_GRID_COLS`, `_GRID_ROWS`.
+1. **`video/` package** — GStreamer pipeline.
 
-2. **`video/` package** — GStreamer pipeline.
+2. **Playback backend** — replay `.rocketlog` archives.
 
-3. **Playback backend** — replay `.rocketlog` archives.
+3. **Keyboard shortcuts** (see `.old` for reference).
 
-4. **Keyboard shortcuts** (see `.old` for reference).
-
-5. **`util/graph.py`** — altitude/velocity graph widget.
+4. **`util/graph.py`** — altitude/velocity graph widget.
 
 ---
 
@@ -171,8 +182,12 @@ just receiver-burn        # Build + flash receiver
 just receiver-monitor     # Open idf.py serial monitor
 just transmitter-build    # Build transmitter firmware
 just transmitter-burn     # Build + flash transmitter
+just sim-build            # Build sim firmware
+just sim-burn             # Build + flash sim
+just sim-monitor          # Open idf.py serial monitor for sim
 just clangd-use-receiver  # Point compile_commands.json at receiver build
 just clangd-use-transmitter  # Point compile_commands.json at transmitter build
+just clangd-use-sim       # Point compile_commands.json at sim build
 ```
 
 Python venv: `.venv/` — create with `python3 -m venv .venv --system-site-packages` (`--system-site-packages` is required for GStreamer `gi` bindings).
