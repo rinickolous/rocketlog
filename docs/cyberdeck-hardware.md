@@ -8,7 +8,7 @@ graph TD
 
     subgraph chassis["GROMIT Ground Station Chassis"]
         subgraph power["Power subsystem"]
-            BAT["LiPo battery\n(~6000 mAh, TBD)"]:::power
+            BAT["LiPo battery\n(3000 mAh)"]:::power
             HAT["Waveshare LiPo Battery HAT\n(SW6106 BMS + 5V boost)"]:::power
             BAT --> HAT
         end
@@ -28,9 +28,9 @@ graph TD
         end
 
         subgraph io["I/O"]
-            HUB["USB hub (internal, TBD)"]:::io
-            DISP["Waveshare 10.1in IPS\nHDMI display (1280x800)"]:::io
-            CTRL["Navigation controls\n(joystick / buttons, TBD)"]:::io
+            HUB["USB hub (internal)"]:::io
+            DISP["Waveshare 10.1in IPS\nHDMI Capacitive Touch display"]:::io
+            CTRL["Input controls"]:::io
         end
 
         HAT -- 5V --> PI
